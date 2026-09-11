@@ -48,10 +48,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/whiteS18/dsh-mcp-panel.git"
+    "url": "git+https://github.com/whiteS18/dsh-mcp-servers-panel.git"
   },
-  "bugs": "https://github.com/whiteS18/dsh-mcp-panel/issues",
-  "homepage": "https://github.com/whiteS18/dsh-mcp-panel#readme",
+  "bugs": "https://github.com/whiteS18/dsh-mcp-servers-panel/issues",
+  "homepage": "https://github.com/whiteS18/dsh-mcp-servers-panel#readme",
   "publishConfig": {
     "registry": "https://registry.npmjs.org"
   },

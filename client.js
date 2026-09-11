@@ -27,9 +27,9 @@ window.__ModuleLoader__.load({
 
     const Menu = primitives.Menu
 
-    const RPC_CHANNEL = '/dsh-mcp-panel'
-    const WEB_API_PREFIX = '/api/dsh-mcp-panel'
-    const LOCALE_NS = 'settings.dsh-mcp-panel'
+    const RPC_CHANNEL = '/dsh-mcp-servers-panel'
+    const WEB_API_PREFIX = '/api/dsh-mcp-servers-panel'
+    const LOCALE_NS = 'settings.dsh-mcp-servers-panel'
 
     // Inject native select styles if Menu isn't fully active
     const SELECT_CSS = `
@@ -70,10 +70,10 @@ window.__ModuleLoader__.load({
 
     function ensureSelectCss() {
       if (typeof document === 'undefined') return
-      if (document.querySelector('style[data-plugin-css="dsh-mcp-panel-select"]')) return
+      if (document.querySelector('style[data-plugin-css="dsh-mcp-servers-panel-select"]')) return
       const tag = document.createElement('style')
       tag.dataset.plugin = 'dsh-mcp-servers-panel'
-      tag.dataset.pluginCss = 'dsh-mcp-panel-select'
+      tag.dataset.pluginCss = 'dsh-mcp-servers-panel-select'
       tag.textContent = SELECT_CSS
       document.head.appendChild(tag)
     }

@@ -44,13 +44,13 @@ dsh plugin --profile <name> add dsh-mcp-servers-panel
 GitHub：
 
 ```sh
-dsh plugin --profile <name> add github:whiteS18/dsh-mcp-panel
+dsh plugin --profile <name> add github:whiteS18/dsh-mcp-servers-panel
 ```
 
 本地检出：
 
 ```sh
-dsh plugin --profile <name> add /绝对路径/dsh-mcp-panel
+dsh plugin --profile <name> add /绝对路径/dsh-mcp-servers-panel
 ```
 
 > [!IMPORTANT]
@@ -63,7 +63,7 @@ dsh plugin --profile <name> add /绝对路径/dsh-mcp-panel
 ## 目录结构
 
 ```
-dsh-mcp-panel/
+dsh-mcp-servers-panel/
 ├── cordis.patch.yml   # Cordis 自挂载补丁
 ├── package.json       # 插件包描述及平台声明
 ├── index.js           # 宿主进程端（配置读写、MCP 进程与生命周期、工具注册、RPC 通信）

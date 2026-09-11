@@ -20,8 +20,8 @@ import { join, resolve, dirname, basename } from 'node:path'
 export const name = 'dsh-mcp-servers-panel'
 export const inject = ['tools']
 
-export const RPC_CHANNEL = '/dsh-mcp-panel'
-export const WEB_API_PREFIX = '/api/dsh-mcp-panel'
+export const RPC_CHANNEL = '/dsh-mcp-servers-panel'
+export const WEB_API_PREFIX = '/api/dsh-mcp-servers-panel'
 
 const PROTOCOL_VERSION = '2024-11-05'
 const DEFAULT_TIMEOUT_MS = 60000
@@ -1027,7 +1027,7 @@ function registerRpc(ctx, manager) {
         },
         { authority: 'loopback' },
       )
-    }, 'dsh-mcp-servers-panel: /dsh-mcp-panel rpc channel')
+    }, 'dsh-mcp-servers-panel: /dsh-mcp-servers-panel rpc channel')
   })
 }
 
