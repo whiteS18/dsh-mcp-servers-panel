@@ -1,0 +1,62 @@
+{
+  "name": "dsh-mcp-servers-panel",
+  "version": "0.1.0",
+  "description": "DSH MCP 服务器管理插件：在设置中提供 MCP Servers 管理面板，支持新增、编辑、删除、启停 MCP 服务器，支持表单与 JSON 两种编辑模式及用户/项目作用域切换，并将 MCP 工具注册到 DSH 供对话原生调用。",
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "plugin",
+    "mcp",
+    "model-context-protocol",
+    "cordis"
+  ],
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/whiteS18/dsh-mcp-panel.git"
+  },
+  "bugs": "https://github.com/whiteS18/dsh-mcp-panel/issues",
+  "homepage": "https://github.com/whiteS18/dsh-mcp-panel#readme",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.0"
+  }
+}
