@@ -10,12 +10,13 @@
  * registers discovered tools to `ctx.tools`, and provides loopback RPC/HTTP endpoints.
  */
 
+import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { mkdir, readFile, writeFile, access } from 'node:fs/promises'
 import { constants as fsConstants, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve, dirname, basename } from 'node:path'
+import { delimiter, join, resolve, dirname, basename } from 'node:path'
 
 export const name = 'dsh-mcp-servers-panel'
 export const inject = ['tools']
@@ -53,9 +54,9 @@ function getAugmentedEnv(customEnv = {}) {
     }
   })
 
-  const existingParts = new Set(currentPath.split(':'))
+  const existingParts = new Set(currentPath.split(delimiter))
   const toAdd = extraPaths.filter((p) => !existingParts.has(p))
-  const augmentedPath = toAdd.length > 0 ? `${toAdd.join(':')}:${currentPath}` : currentPath
+  const augmentedPath = toAdd.length > 0 ? `${toAdd.join(delimiter)}${delimiter}${currentPath}` : currentPath
 
   return {
     ...process.env,
@@ -97,6 +98,18 @@ function pickWorkspaceRoot(candidate) {
   return resolved
 }
 
+function liveSessionRoots(ctx) {
+  const roots = []
+  try {
+    const sessions = ctx?.get?.('sessions')
+    for (const session of sessions?.list?.() || []) {
+      const root = pickWorkspaceRoot(session?.header?.cwd)
+      if (root && !roots.includes(root)) roots.push(root)
+    }
+  } catch {}
+  return roots
+}
+
 export function defaultWorkspaceRoot(ctx) {
   try {
     const sandboxPolicy = ctx?.get?.('sandboxPolicy')
@@ -104,11 +117,8 @@ export function defaultWorkspaceRoot(ctx) {
     if (fromSandbox) return fromSandbox
   } catch {}
 
-  try {
-    const session = ctx?.get?.('session')
-    const fromSession = pickWorkspaceRoot(session?.header?.cwd)
-    if (fromSession) return fromSession
-  } catch {}
+  const [fromSession] = liveSessionRoots(ctx)
+  if (fromSession) return fromSession
 
   if (process.env.DSH_WORKSPACE) {
     const fromEnv = pickWorkspaceRoot(process.env.DSH_WORKSPACE)
@@ -129,25 +139,36 @@ export function defaultWorkspaceRoot(ctx) {
 export async function getKnownWorkspaces(ctx) {
   const map = new Map()
 
-  // 1. Storage file ~/.dsh/storages/workspace.json
-  const storagePath = join(homedir(), '.dsh', 'storages', 'workspace.json')
+  // Current registry: ctx.workspaceRegistry. Records expose path/title directly.
   try {
-    if (existsSync(storagePath)) {
-      const data = JSON.parse(await readFile(storagePath, 'utf8'))
-      const workspaces = data?.tables?.workspaces || {}
-      for (const [id, item] of Object.entries(workspaces)) {
-        if (item?.path && existsSync(item.path) && !sameResolvedPath(item.path, homedir())) {
-          map.set(item.path, {
-            id,
-            path: item.path,
-            title: item.title || basename(item.path),
-          })
-        }
+    const registry = ctx?.get?.('workspaceRegistry')
+    for (const item of registry?.list?.() || []) {
+      const path = item?.path || item?.record?.path
+      const title = item?.title || item?.record?.title
+      const id = item?.id || path
+      if (path && existsSync(path) && !sameResolvedPath(path, homedir())) {
+        const resolved = resolve(path)
+        map.set(resolved, {
+          id,
+          path: resolved,
+          title: title || basename(resolved),
+        })
       }
     }
   } catch {}
 
-  // 2. Active default workspace
+  // A live session can name a directory that is not registered yet.
+  for (const path of liveSessionRoots(ctx)) {
+    if (!map.has(path)) {
+      map.set(path, {
+        id: path,
+        path,
+        title: basename(path) || path,
+      })
+    }
+  }
+
+  // Active default workspace
   const current = defaultWorkspaceRoot(ctx)
   if (current && !map.has(current)) {
     map.set(current, {
@@ -403,7 +424,7 @@ export class McpProcessRunner {
       const listResult = await this.sendRequest('tools/list', {})
       const tools = Array.isArray(listResult?.tools) ? listResult.tools : []
       this.tools = tools.map((t) => ({
-        name: `mcp__${this.config.name}__${t.name}`,
+        name: publicToolName(this.config.name, t.name),
         rawName: t.name,
         description: t.description || '',
         inputSchema: t.inputSchema || { type: 'object' },
@@ -437,7 +458,7 @@ export class McpProcessRunner {
       const listResult = await this.httpCall('tools/list', {})
       const tools = Array.isArray(listResult?.tools) ? listResult.tools : []
       this.tools = tools.map((t) => ({
-        name: `mcp__${this.config.name}__${t.name}`,
+        name: publicToolName(this.config.name, t.name),
         rawName: t.name,
         description: t.description || '',
         inputSchema: t.inputSchema || { type: 'object' },
@@ -978,9 +999,27 @@ function fail(error) {
   return {
     ok: false,
     error: {
+      code: 'dsh-mcp-servers-panel/error',
       message: error instanceof Error ? error.message : String(error),
+      details: {},
     },
   }
+}
+
+const MAX_PUBLIC_NAME_LENGTH = 64
+const NAME_HASH_LENGTH = 12
+
+/**
+ * Model-facing name accepted by the current tool runtime:
+ * `mcp__<server>__<tool>`, at most 64 characters of [A-Za-z0-9_-].
+ * A lossy normalization keeps a hash so distinct tools do not collapse.
+ */
+export function publicToolName(serverName, rawName) {
+  const joined = `mcp__${serverName}__${rawName}`
+  const normalized = joined.replace(/[^A-Za-z0-9_-]/g, '_')
+  if (normalized === joined && normalized.length <= MAX_PUBLIC_NAME_LENGTH) return normalized
+  const hash = createHash('sha256').update(`${serverName}\0${rawName}`).digest('hex').slice(0, NAME_HASH_LENGTH)
+  return `${normalized.slice(0, MAX_PUBLIC_NAME_LENGTH - NAME_HASH_LENGTH - 1)}_${hash}`
 }
 
 /**
@@ -1129,14 +1168,10 @@ function registerWebServer(ctx, manager) {
 export function apply(ctx) {
   const manager = new McpManager(ctx)
 
-  // Track session cwd changes if session service is mounted
-  ctx.inject(['session'], (sessionCtx) => {
-    sessionCtx.effect(() => {
-      return sessionCtx.session?.on?.('change', (session) => {
-        const cwd = session?.header?.cwd
-        if (cwd) manager.setWorkspaceRoot(cwd)
-      })
-    })
+  // Sessions are published on ctx.sessions; cwd lives on session.header.
+  ctx.on?.('session/created', (session) => {
+    const cwd = session?.header?.cwd
+    if (cwd) manager.setWorkspaceRoot(cwd)
   })
 
   // Register RPC & WebServer routes

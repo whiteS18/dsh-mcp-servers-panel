@@ -164,14 +164,22 @@ window.__ModuleLoader__.load({
       return text
     }
 
-    // Call RPC or fallback to Loopback WebServer HTTP
+    // Prefer the current Connection RPC. Fall back to the exact loopback
+    // route only when the RPC transport itself is unavailable.
     async function apiCall(rpc, endpoint, payload) {
       if (rpc?.call) {
+        let result
         try {
-          const result = await rpc.call(RPC_CHANNEL, endpoint, payload)
-          if (result && result.ok) return result.value
-          if (result && result.error) throw new Error(result.error.message)
-        } catch {}
+          result = await rpc.call(RPC_CHANNEL, endpoint, payload)
+        } catch (err) {
+          const message = String(err?.message || err)
+          if (!/transport failure|HTTP \d+|network|failed to fetch/i.test(message)) throw err
+          result = null
+        }
+        if (result) {
+          if (result.ok) return result.value
+          throw new Error(result.error?.message || result.error?.code || 'RPC 调用失败')
+        }
       }
 
       const response = await fetch(`${WEB_API_PREFIX}/${endpoint}`, {

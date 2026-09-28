@@ -29,7 +29,7 @@ DSH (DeepSeek Harness) 的 MCP 服务器管理面板插件。
 4. **DSH 原生对话调用**：
    - 自动维护 MCP 进程生命周期（stdio 管道或 HTTP 通信）。
    - 自动完成 MCP 2024-11-05 协议握手（`initialize` -> `notifications/initialized` -> `tools/list`）。
-   - 自动将发现的工具以 `mcp__<serverName>__<toolName>` 稳定格式注册至 `ctx.tools`，在 DSH 对话中模型可直接调用并获取结果。
+   - 自动将发现的工具以 `mcp__<serverName>__<toolName>` 注册至 `ctx.tools`。名称超过 64 字符或含非法字符时，按当前 DSH 规则截断并附加哈希。
 
 ---
 

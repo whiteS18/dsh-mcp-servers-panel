@@ -3,12 +3,24 @@ import assert from 'node:assert/strict'
 import {
   normalizeServerList,
   formatCanonicalConfig,
+  publicToolName,
   McpManager,
   McpProcessRunner,
 } from '../index.js'
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+test('publicToolName matches the current 64-character tool-name contract', () => {
+  assert.equal(publicToolName('mock', 'echo_tool'), 'mcp__mock__echo_tool')
+  const dotted = publicToolName('mock', 'echo.tool')
+  assert.notEqual(dotted, 'mcp__mock__echo_tool')
+  assert.match(dotted, /^mcp__mock__echo_tool_[0-9a-f]{12}$/)
+  const longName = publicToolName('mock', 'x'.repeat(80))
+  assert.equal(longName.length, 64)
+  assert.match(longName, /^[A-Za-z0-9_-]+$/)
+  assert.notEqual(publicToolName('mock', 'a'.repeat(80)), publicToolName('mock', 'b'.repeat(80)))
+})
 
 test('normalizeServerList handles array format', () => {
   const input = {
