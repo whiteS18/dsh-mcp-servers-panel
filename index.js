@@ -15,8 +15,8 @@ import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { mkdir, readFile, writeFile, access } from 'node:fs/promises'
 import { constants as fsConstants, existsSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { delimiter, join, resolve, dirname, basename } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { delimiter, dirname, basename, extname, isAbsolute, join, resolve } from 'node:path'
 
 export const name = 'dsh-mcp-servers-panel'
 export const inject = ['tools']
@@ -26,17 +26,24 @@ export const WEB_API_PREFIX = '/api/dsh-mcp-servers-panel'
 
 const PROTOCOL_VERSION = '2024-11-05'
 const DEFAULT_TIMEOUT_MS = 60000
+const HANDSHAKE_TIMEOUT_MS = 8000
 const MAX_BODY_BYTES = 256 * 1024
 
-/**
- * Augment process.env.PATH with standard user bin directories on macOS/Linux
- * so spawned processes like `npx`, `uvx`, `node`, `python3` can be resolved
- * even when DSH is launched from a desktop GUI environment without shell PATH.
- */
-function getAugmentedEnv(customEnv = {}) {
-  const currentPath = process.env.PATH || ''
-  const home = homedir()
-  const extraPaths = [
+const isWin = process.platform === 'win32'
+
+function pathExts(env = process.env) {
+  if (!isWin) return ['']
+  const raw = String(env.PATHEXT || '.EXE;.CMD;.BAT;.COM')
+  const preferred = ['.CMD', '.EXE', '.BAT']
+  const rest = raw.split(';').map((item) => item.trim()).filter(Boolean)
+    .map((item) => (item.startsWith('.') ? item : `.${item}`).toUpperCase())
+    .filter((ext) => ext && !preferred.includes(ext) && ext !== '.COM' && ext !== '.CPL')
+  return [...preferred, ...rest]
+}
+
+function extraBinDirs(home) {
+  const dirs = [
+    dirname(process.execPath),
     join(home, '.local', 'share', 'mise', 'shims'),
     join(home, '.cargo', 'bin'),
     join(home, '.local', 'bin'),
@@ -46,23 +53,169 @@ function getAugmentedEnv(customEnv = {}) {
     '/usr/local/sbin',
     join(home, '.nvm', 'current', 'bin'),
     join(home, '.orbstack', 'bin'),
-  ].filter((p) => {
-    try {
-      return existsSync(p)
-    } catch {
-      return false
-    }
-  })
+    join(home, '.volta', 'bin'),
+    join(home, 'scoop', 'shims'),
+    join(home, 'AppData', 'Roaming', 'npm'),
+    join(home, 'AppData', 'Local', 'pnpm'),
+    join(home, 'AppData', 'Local', 'pnpm', 'bin'),
+    join(home, 'AppData', 'Local', 'Yarn', 'bin'),
+    'C:\\Program Files\\nodejs',
+    'C:\\Program Files (x86)\\nodejs',
+    process.env.NVM_SYMLINK,
+    process.env.NVM_HOME,
+    process.env.npm_config_prefix,
+  ]
+  if (process.env.LOCALAPPDATA) {
+    dirs.push(join(process.env.LOCALAPPDATA, 'pnpm'))
+    dirs.push(join(process.env.LOCALAPPDATA, 'fnm_multishells'))
+  }
+  if (process.env.APPDATA) {
+    dirs.push(join(process.env.APPDATA, 'npm'))
+    dirs.push(join(process.env.APPDATA, 'fnm'))
+  }
+  return dirs.filter((p) => typeof p === 'string' && p && existsSync(p))
+}
 
-  const existingParts = new Set(currentPath.split(delimiter))
+/**
+ * Augment process.env.PATH with standard user bin directories so spawned
+ * processes like `npx`, `uvx`, `node`, `python3` can be resolved even when
+ * DSH is launched from a desktop GUI environment without a login-shell PATH.
+ */
+export function getAugmentedEnv(customEnv = {}) {
+  const currentPath = process.env.PATH || process.env.Path || ''
+  const extraPaths = extraBinDirs(homedir())
+  const existingParts = new Set(currentPath.split(delimiter).filter(Boolean))
   const toAdd = extraPaths.filter((p) => !existingParts.has(p))
-  const augmentedPath = toAdd.length > 0 ? `${toAdd.join(delimiter)}${delimiter}${currentPath}` : currentPath
+  let augmentedPath = toAdd.length > 0 ? `${toAdd.join(delimiter)}${delimiter}${currentPath}` : currentPath
+
+  const custom = { ...(customEnv || {}) }
+  const customPath = custom.PATH || custom.Path
+  delete custom.PATH
+  delete custom.Path
+  if (typeof customPath === 'string' && customPath.trim()) {
+    const customParts = customPath.split(delimiter).filter(Boolean)
+    const known = new Set(augmentedPath.split(delimiter).filter(Boolean))
+    const extraCustom = customParts.filter((p) => !known.has(p))
+    if (extraCustom.length > 0) {
+      augmentedPath = `${augmentedPath}${delimiter}${extraCustom.join(delimiter)}`
+    }
+  }
 
   return {
     ...process.env,
     PATH: augmentedPath,
-    ...(customEnv || {}),
+    ...(isWin ? { Path: augmentedPath } : {}),
+    ...custom,
   }
+}
+
+/**
+ * Resolve a command name (`npx`) to a real file (`npx.cmd`) using PATH + PATHEXT.
+ * Windows `spawn()` without `shell: true` cannot find extensionless `.cmd` shims.
+ */
+export function resolveCommandOnPath(command, env = process.env) {
+  if (!command || typeof command !== 'string') return command
+  const trimmed = command.trim()
+  if (!trimmed) return command
+
+  const tryFile = (file) => (file && existsSync(file) ? file : '')
+  const hasExt = Boolean(extname(trimmed))
+  // Windows 官方 Node 安装同时提供无扩展名的 shebang 脚本（`npx`）和
+  // `npx.cmd`。CreateProcess / cmd.exe 都不能把前者当可执行文件跑，
+  // 因此无扩展名时只按 PATHEXT 查找（.CMD / .EXE / .BAT …）。
+  const names = hasExt || !isWin
+    ? [trimmed]
+    : pathExts(env).filter(Boolean).map((ext) => trimmed + ext)
+
+  if (isAbsolute(trimmed)) {
+    for (const name of names) {
+      const hit = tryFile(name)
+      if (hit) return hit
+    }
+    return trimmed
+  }
+
+  const pathVal = env.PATH || env.Path || ''
+  for (const dir of pathVal.split(delimiter)) {
+    if (!dir) continue
+    for (const name of names) {
+      const hit = tryFile(join(dir, name))
+      if (hit) return hit
+    }
+  }
+  return trimmed
+}
+
+export function quoteWindowsCmdArg(value) {
+  const text = String(value ?? '')
+  if (text === '') return '""'
+  if (!/[\s"&<>|^()%!]/.test(text)) return text
+  return `"${text.replace(/"/g, '\\"')}"`
+}
+
+/**
+ * Build spawn file/argv for stdio MCP servers.
+ * On Windows, `.cmd` / `.bat` (and extensionless shims like `npx`) must go
+ * through `cmd.exe`; CreateProcess cannot run them and reports ENOENT/EINVAL.
+ */
+export function buildStdioSpawnSpec(command, args = [], env = process.env) {
+  const resolved = resolveCommandOnPath(command, env)
+  const childArgs = Array.isArray(args) ? args.map(String) : []
+  if (isWin) {
+    const ext = extname(resolved).toLowerCase()
+    if (ext === '.cmd' || ext === '.bat') {
+      // cmd.exe /S /C 会剥掉整段的首尾引号，所以要再包一层：
+      //   /c ""C:\Program Files\nodejs\npx.cmd" -y pkg"
+      const line = [resolved, ...childArgs].map(quoteWindowsCmdArg).join(' ')
+      return {
+        file: process.env.ComSpec || 'cmd.exe',
+        argv: ['/d', '/s', '/c', `"${line}"`],
+        resolved,
+      }
+    }
+  }
+  return { file: resolved, argv: childArgs, resolved }
+}
+
+function formatSpawnError(command, resolved, err) {
+  const raw = err?.message || String(err)
+  if (err?.code === 'ENOENT' || /ENOENT/i.test(raw)) {
+    const hint = isWin
+      ? 'Windows 上 spawn 不能直接找到无扩展名的 npx/npm（实际是 .cmd）。请确认 Node.js 已安装并加入 PATH，或把 command 改成绝对路径（例如 C:\\Program Files\\nodejs\\npx.cmd）。'
+      : '请确认该命令已安装，且 DSH 进程的 PATH 能找到它（从 Dock / 开始菜单启动时往往没有登录 shell 的 PATH）。'
+    return `找不到可执行文件「${command}」${resolved && resolved !== command ? `（解析为 ${resolved}）` : ''}。${hint} 原始错误: ${raw}`
+  }
+  return raw
+}
+
+function waitForChildSpawn(child) {
+  return new Promise((resolvePromise, reject) => {
+    if (!child) return reject(new Error('进程未创建'))
+    if (child.exitCode != null || child.signalCode != null) {
+      return reject(new Error(`进程已退出 (code: ${child.exitCode}, signal: ${child.signalCode})`))
+    }
+    if (child.pid) return resolvePromise()
+    const onError = (err) => {
+      cleanup()
+      reject(err)
+    }
+    const onSpawn = () => {
+      cleanup()
+      resolvePromise()
+    }
+    const onExit = (code, signal) => {
+      cleanup()
+      reject(new Error(`进程已退出 (code: ${code}, signal: ${signal})`))
+    }
+    const cleanup = () => {
+      child.off('error', onError)
+      child.off('spawn', onSpawn)
+      child.off('exit', onExit)
+    }
+    child.once('error', onError)
+    child.once('spawn', onSpawn)
+    child.once('exit', onExit)
+  })
 }
 
 /**
@@ -344,6 +497,7 @@ export class McpProcessRunner {
     this.nextRequestId = 1
     this.pending = new Map()
     this.stopped = false
+    this.stdoutRl = null
   }
 
   async start() {
@@ -370,23 +524,37 @@ export class McpProcessRunner {
     const preferredCwd = cwd
       ? resolve(this.workspaceRoot || process.cwd(), cwd)
       : this.workspaceRoot
-    const effectiveCwd = preferredCwd && existsSync(preferredCwd) ? preferredCwd : undefined
+    const fallbackCwd = existsSync(process.cwd()) ? process.cwd() : tmpdir()
+    const effectiveCwd = preferredCwd && existsSync(preferredCwd) ? preferredCwd : fallbackCwd
+    const childEnv = getAugmentedEnv(env)
+    const spawnSpec = buildStdioSpawnSpec(command, args || [], childEnv)
+    const resolvedCommand = spawnSpec.resolved
 
-    try {
-      this.child = spawn(command, args || [], {
-        ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
-        env: getAugmentedEnv(env),
-        stdio: ['pipe', 'pipe', 'pipe'],
-      })
-    } catch (err) {
+    if (isWin && (isAbsolute(resolvedCommand) ? !existsSync(resolvedCommand) : resolvedCommand === command)) {
       this.status = 'error'
-      this.error = `启动进程失败: ${err.message}`
+      this.error = `启动进程失败: ${formatSpawnError(command, resolvedCommand, Object.assign(new Error(`spawn ${command} ENOENT`), { code: 'ENOENT' }))}`
       return
     }
 
+    try {
+      this.child = spawn(spawnSpec.file, spawnSpec.argv, {
+        cwd: effectiveCwd,
+        env: childEnv,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+        windowsVerbatimArguments: isWin && spawnSpec.file !== resolvedCommand,
+      })
+    } catch (err) {
+      this.status = 'error'
+      this.error = `启动进程失败: ${formatSpawnError(command, resolvedCommand, err)}`
+      return
+    }
+
+    const spawned = waitForChildSpawn(this.child)
+
     this.child.on('error', (err) => {
       this.status = 'error'
-      this.error = `进程错误: ${err.message}`
+      this.error = `进程错误: ${formatSpawnError(command, resolvedCommand, err)}`
       this.cleanupPending(err)
       this.unregisterTools()
     })
@@ -399,17 +567,21 @@ export class McpProcessRunner {
       this.unregisterTools()
     })
 
-    const rl = createInterface({ input: this.child.stdout })
-    rl.on('line', (line) => {
-      this.handleLine(line)
-    })
+    if (this.child.stdout) {
+      this.stdoutRl = createInterface({ input: this.child.stdout })
+      this.stdoutRl.on('line', (line) => {
+        this.handleLine(line)
+      })
+    }
 
     let stderrBuffer = ''
-    this.child.stderr.on('data', (data) => {
+    this.child.stderr?.on('data', (data) => {
       stderrBuffer = (stderrBuffer + data.toString()).slice(-1000)
     })
 
     try {
+      await spawned
+
       // 1. Send initialize
       await this.sendRequest('initialize', {
         protocolVersion: PROTOCOL_VERSION,
@@ -435,7 +607,8 @@ export class McpProcessRunner {
       this.error = null
     } catch (err) {
       this.status = 'error'
-      this.error = `初始化失败: ${err.message}${stderrBuffer ? ` (${stderrBuffer.trim().slice(-200)})` : ''}`
+      const spawnDetail = formatSpawnError(command, resolvedCommand, err)
+      this.error = `初始化失败: ${spawnDetail}${stderrBuffer ? ` (${stderrBuffer.trim().slice(-200)})` : ''}`
       this.unregisterTools()
     }
   }
@@ -453,9 +626,9 @@ export class McpProcessRunner {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {},
         clientInfo: { name: 'dsh-mcp-servers-panel', version: '0.1.0' },
-      })
+      }, HANDSHAKE_TIMEOUT_MS)
 
-      const listResult = await this.httpCall('tools/list', {})
+      const listResult = await this.httpCall('tools/list', {}, HANDSHAKE_TIMEOUT_MS)
       const tools = Array.isArray(listResult?.tools) ? listResult.tools : []
       this.tools = tools.map((t) => ({
         name: publicToolName(this.config.name, t.name),
@@ -474,13 +647,13 @@ export class McpProcessRunner {
     }
   }
 
-  async httpCall(method, params) {
+  async httpCall(method, params, timeoutMs) {
     const { url, headers, toolCallTimeoutMs } = this.config
     const id = this.nextRequestId++
     const body = { jsonrpc: '2.0', id, method, params }
 
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), toolCallTimeoutMs || DEFAULT_TIMEOUT_MS)
+    const timeout = setTimeout(() => controller.abort(), timeoutMs || toolCallTimeoutMs || DEFAULT_TIMEOUT_MS)
 
     try {
       const response = await fetch(url, {
@@ -524,7 +697,7 @@ export class McpProcessRunner {
 
   sendRequest(method, params) {
     return new Promise((resolve, reject) => {
-      if (!this.child || !this.child.stdin.writable) {
+      if (!this.child || !this.child.stdin?.writable) {
         return reject(new Error('MCP 进程不可写或未就绪'))
       }
       const id = this.nextRequestId++
@@ -543,7 +716,7 @@ export class McpProcessRunner {
   }
 
   sendNotification(method, params) {
-    if (!this.child || !this.child.stdin.writable) return
+    if (!this.child || !this.child.stdin?.writable) return
     const payload = JSON.stringify({ jsonrpc: '2.0', method, params: params || {} }) + '\n'
     this.child.stdin.write(payload)
   }
@@ -658,15 +831,26 @@ export class McpProcessRunner {
     this.unregisterTools()
     this.cleanupPending(new Error('MCP 服务已停止'))
 
+    if (this.stdoutRl) {
+      try { this.stdoutRl.close() } catch {}
+      this.stdoutRl = null
+    }
+
     if (this.child) {
+      const child = this.child
       try {
-        this.child.kill('SIGTERM')
-        this.child.unref?.()
-        setTimeout(() => {
-          if (this.child && !this.child.killed) {
-            this.child.kill('SIGKILL')
-          }
-        }, 3000)
+        try { child.stdin?.end() } catch {}
+        try { child.stdout?.destroy() } catch {}
+        try { child.stderr?.destroy() } catch {}
+        child.kill(isWin ? 'SIGKILL' : 'SIGTERM')
+        child.unref?.()
+        if (!isWin) {
+          setTimeout(() => {
+            if (!child.killed) {
+              try { child.kill('SIGKILL') } catch {}
+            }
+          }, 3000)
+        }
       } catch {}
       this.child = null
     }

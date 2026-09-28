@@ -124,6 +124,8 @@ window.__ModuleLoader__.load({
       noTools: '未发现可用工具',
       connecting: '正在连接...',
       error: '连接错误',
+      errorDetailTitle: '错误详情',
+      configTitle: '启动配置',
       disabled: '已禁用',
       edit: '编辑',
       delete: '删除',
@@ -435,12 +437,20 @@ window.__ModuleLoader__.load({
       }),
       subRow: {
         display: 'flex',
-        alignItems: 'center',
+        alignItems: 'flex-start',
         gap: 6,
         fontSize: 13,
+        lineHeight: '18px',
         color: 'var(--dsw-alias-label-tertiary)',
         cursor: 'pointer',
         userSelect: 'none',
+      },
+      subRowText: {
+        minWidth: 0,
+        flex: 1,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
       },
       toolsList: {
         marginTop: 6,
@@ -449,6 +459,43 @@ window.__ModuleLoader__.load({
         display: 'flex',
         flexDirection: 'column',
         gap: 8,
+      },
+      errorBox: {
+        marginTop: 6,
+        padding: '8px 10px',
+        borderRadius: 8,
+        background: 'var(--dsw-alias-state-error-bg, rgba(239, 68, 68, 0.08))',
+        border: '1px solid var(--dsw-alias-state-error-border, rgba(239, 68, 68, 0.35))',
+        color: 'var(--dsw-alias-state-error-primary, #ef4444)',
+        fontSize: 12,
+        lineHeight: '18px',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        fontFamily: 'Menlo, Monaco, Consolas, monospace',
+      },
+      configList: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        fontSize: 12,
+        color: 'var(--dsw-alias-label-secondary)',
+        lineHeight: '18px',
+      },
+      configKey: {
+        color: 'var(--dsw-alias-label-tertiary)',
+        fontFamily: 'Menlo, Monaco, Consolas, monospace',
+        marginRight: 6,
+      },
+      configVal: {
+        fontFamily: 'Menlo, Monaco, Consolas, monospace',
+        wordBreak: 'break-word',
+        whiteSpace: 'pre-wrap',
+      },
+      detailTitle: {
+        fontSize: 12,
+        fontWeight: 600,
+        color: 'var(--dsw-alias-label-secondary)',
+        marginBottom: 4,
       },
       toolItem: {
         display: 'flex',
@@ -1165,27 +1212,52 @@ window.__ModuleLoader__.load({
 
               // Sub-row (> N tools enabled)
               h('div', { style: css.subRow, onClick: () => toggleTools(uniqueKey) },
-                isExpanded ? h(Icons.ChevronDown, { size: 14 }) : h(Icons.ChevronRight, { size: 14 }),
-                h('span', null,
-                  server.error
-                    ? `${translate('error')}: ${server.error}`
-                    : server.status === 'connecting'
+                h('span', { style: { display: 'inline-flex', marginTop: 2, flexShrink: 0 } },
+                  isExpanded ? h(Icons.ChevronDown, { size: 14 }) : h(Icons.ChevronRight, { size: 14 })
+                ),
+                h('span', { style: css.subRowText, title: server.error || undefined },
+                  server.status === 'connecting'
                     ? translate('connecting')
+                    : server.error
+                    ? translate('error')
                     : count > 0
                     ? translate('toolsEnabled', { count })
                     : translate('noTools')
                 )
               ),
 
-              // Expanded tools
-              isExpanded && (server.tools || []).length > 0 ? (
+              isExpanded ? (
                 h('div', { style: css.toolsList },
-                  server.tools.map((tool) =>
-                    h('div', { key: tool.name, style: css.toolItem },
-                      h('span', { style: css.toolName }, tool.rawName || tool.name),
-                      tool.description ? h('span', { style: css.toolDesc }, tool.description) : null
-                    )
-                  )
+                  server.error
+                    ? h('div', null,
+                        h('div', { style: css.detailTitle }, translate('errorDetailTitle')),
+                        h('div', { style: css.errorBox }, server.error)
+                      )
+                    : null,
+                  (server.command || server.url)
+                    ? h('div', null,
+                        h('div', { style: css.detailTitle }, translate('configTitle')),
+                        h('div', { style: css.configList },
+                          server.transport ? h('div', null, h('span', { style: css.configKey }, 'transport'), h('span', { style: css.configVal }, server.transport)) : null,
+                          server.command ? h('div', null, h('span', { style: css.configKey }, 'command'), h('span', { style: css.configVal }, server.command)) : null,
+                          Array.isArray(server.args) && server.args.length > 0
+                            ? h('div', null, h('span', { style: css.configKey }, 'args'), h('span', { style: css.configVal }, server.args.join(' ')))
+                            : null,
+                          server.cwd ? h('div', null, h('span', { style: css.configKey }, 'cwd'), h('span', { style: css.configVal }, server.cwd)) : null,
+                          server.url ? h('div', null, h('span', { style: css.configKey }, 'url'), h('span', { style: css.configVal }, server.url)) : null
+                        )
+                      )
+                    : null,
+                  (server.tools || []).length > 0
+                    ? server.tools.map((tool) =>
+                        h('div', { key: tool.name, style: css.toolItem },
+                          h('span', { style: css.toolName }, tool.rawName || tool.name),
+                          tool.description ? h('span', { style: css.toolDesc }, tool.description) : null
+                        )
+                      )
+                    : (!server.error && server.status !== 'connecting'
+                        ? h('div', { style: css.toolDesc }, translate('noTools'))
+                        : null)
                 )
               ) : null
             )

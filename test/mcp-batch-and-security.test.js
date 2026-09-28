@@ -8,6 +8,19 @@ import {
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
+
+async function rmSafe(dir) {
+  for (let i = 0; i < 8; i++) {
+    try {
+      await rm(dir, { recursive: true, force: true })
+      return
+    } catch (err) {
+      if (err?.code !== 'EBUSY' && err?.code !== 'ENOTEMPTY' && err?.code !== 'EPERM') throw err
+      await sleep(80 * (i + 1))
+    }
+  }
+}
 
 test('isLoopbackRequest detects local requests accurately', () => {
   assert.equal(isLoopbackRequest({ socket: { remoteAddress: '127.0.0.1' } }), true)
@@ -33,7 +46,7 @@ test('McpManager batch save via rawJson in Cursor / ZCode format', async () => {
   const rawJson = JSON.stringify({
     mcpServers: {
       'server-a': {
-        command: 'echo',
+        command: 'dsh-mcp-missing-bin',
         args: ['a'],
         env: { A: '1' },
       },
@@ -55,7 +68,7 @@ test('McpManager batch save via rawJson in Cursor / ZCode format', async () => {
 
   const sA = content.servers.find((s) => s.name === 'server-a')
   assert.ok(sA)
-  assert.equal(sA.command, 'echo')
+  assert.equal(sA.command, 'dsh-mcp-missing-bin')
   assert.deepEqual(sA.args, ['a'])
   assert.deepEqual(sA.env, { A: '1' })
 
@@ -66,7 +79,7 @@ test('McpManager batch save via rawJson in Cursor / ZCode format', async () => {
   assert.deepEqual(sB.headers, { Authorization: 'Bearer token' })
 
   manager.dispose()
-  await rm(wsDir, { recursive: true, force: true })
+  await rmSafe(wsDir)
 })
 
 test('JSON save with replaceName renames a server instead of leaving the old one', async () => {
@@ -86,7 +99,7 @@ test('JSON save with replaceName renames a server instead of leaving the old one
     workspacePath: wsDir,
     server: {
       transport: 'stdio',
-      command: 'npx',
+      command: 'dsh-mcp-missing-bin',
       args: ['-y', '@sammysnake/fast-context-mcp@next'],
     },
   })
@@ -95,7 +108,7 @@ test('JSON save with replaceName renames a server instead of leaving the old one
     rawJson: JSON.stringify({
       mcpServers: {
         'fast-context-mcp': {
-          command: 'npx',
+          command: 'dsh-mcp-missing-bin',
           args: ['-y', '@sammysnake/fast-context-mcp@next'],
         },
       },
@@ -115,7 +128,7 @@ test('JSON save with replaceName renames a server instead of leaving the old one
   assert.equal(listed.servers[0].name, 'fast-context-mcp')
 
   manager.dispose()
-  await rm(wsDir, { recursive: true, force: true })
+  await rmSafe(wsDir)
 })
 
 test('normalizeServerList handles DSH canonical servers object and array format', () => {

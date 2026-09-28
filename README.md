@@ -31,6 +31,14 @@ DSH (DeepSeek Harness) 的 MCP 服务器管理面板插件。
    - 自动完成 MCP 2024-11-05 协议握手（`initialize` -> `notifications/initialized` -> `tools/list`）。
    - 自动将发现的工具以 `mcp__<serverName>__<toolName>` 注册至 `ctx.tools`。名称超过 64 字符或含非法字符时，按当前 DSH 规则截断并附加哈希。
 
+5. **跨平台与 Windows 原生兼容**：
+   - **Windows stdio 增强**：针对 Windows 上 `spawn` 无法直接运行无扩展名脚本或 `.cmd`/`.bat`（例如 `npx`、`uvx`）的问题，自动通过 `PATHEXT` 探测可执行目标并封装 `cmd.exe /d /s /c` 转义执行，彻底解决 `ENOENT`。
+   - **环境 PATH 智能探测补齐**：自动嗅探并补充常见全局环境路径（如 Node.js 安装目录、`npm` 全局目录、`pnpm`、`scoop`、`mise`、`cargo` 等），避免从桌面图标启动 DSH 缺失 login-shell PATH 的问题。
+
+6. **诊断排查与可视化**：
+   - 点击展开服务器卡片，不仅可查看可用工具，还能直接展开查阅底层启动配置（传输类型、启动命令、参数、工作目录、URL）。
+   - 连接异常时直接展示错误详情提示框，配合 8 秒握手超时保护，避免子进程死锁导致卡在「正在连接」。
+
 ---
 
 ## 安装
@@ -68,6 +76,7 @@ dsh-mcp-servers-panel/
 ├── package.json       # 插件包描述及平台声明
 ├── index.js           # 宿主进程端（配置读写、MCP 进程与生命周期、工具注册、RPC 通信）
 ├── client.js          # 前端渲染端（设置页 UI、列表展示、表单/JSON 编辑器、配置弹窗）
+├── test/              # 单元测试（生命周期、参数解析、安全校验、Windows 调度）
 ├── README.md          # 插件说明文档
 └── LICENSE            # MIT 开源许可证
 ```

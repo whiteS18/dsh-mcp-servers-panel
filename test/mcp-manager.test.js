@@ -6,10 +6,37 @@ import {
   publicToolName,
   McpManager,
   McpProcessRunner,
+  resolveCommandOnPath,
+  buildStdioSpawnSpec,
+  getAugmentedEnv,
 } from '../index.js'
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+test('getAugmentedEnv keeps PATH and merges custom env', () => {
+  const env = getAugmentedEnv({ FOO: 'bar' })
+  assert.equal(env.FOO, 'bar')
+  assert.ok(typeof env.PATH === 'string' && env.PATH.length > 0)
+})
+
+test('resolveCommandOnPath finds npx via PATHEXT on Windows', () => {
+  if (process.platform !== 'win32') return
+  const resolved = resolveCommandOnPath('npx', getAugmentedEnv())
+  assert.match(resolved, /npx\.(cmd|exe|bat)$/i)
+})
+
+test('buildStdioSpawnSpec routes Windows .cmd through cmd.exe', () => {
+  if (process.platform !== 'win32') return
+  const spec = buildStdioSpawnSpec('npx', ['-y', '@scope/pkg'], getAugmentedEnv())
+  assert.match(spec.file, /cmd\.exe$/i)
+  assert.equal(spec.argv[0], '/d')
+  assert.equal(spec.argv[1], '/s')
+  assert.equal(spec.argv[2], '/c')
+  assert.match(spec.argv[3], /^".*"$/)
+  assert.match(spec.argv[3], /npx/i)
+  assert.match(spec.argv[3], /@scope\/pkg/)
+})
 
 test('publicToolName matches the current 64-character tool-name contract', () => {
   assert.equal(publicToolName('mock', 'echo_tool'), 'mcp__mock__echo_tool')
@@ -95,6 +122,28 @@ test('formatCanonicalConfig formats correctly', () => {
   assert.equal(canonical.servers[0].command, 'node')
   assert.deepEqual(canonical.servers[0].args, ['app.js'])
   assert.deepEqual(canonical.servers[0].env, { KEY: 'val' })
+})
+
+test('McpProcessRunner reports a readable error when the command is missing', async () => {
+  const mockCtx = {
+    tools: { register() { return () => {} } },
+    logger: { warn() {}, error() {}, info() {} },
+  }
+  const runner = new McpProcessRunner(
+    mockCtx,
+    {
+      name: 'missing-bin',
+      transport: 'stdio',
+      command: 'definitely-not-a-real-mcp-bin-xyz',
+      args: [],
+      enabled: true,
+    },
+    process.cwd(),
+  )
+  await runner.start()
+  assert.equal(runner.status, 'error')
+  assert.match(String(runner.error), /找不到可执行文件|ENOENT|初始化失败|进程错误/)
+  runner.stop()
 })
 
 test('McpProcessRunner lifecycle and tool discovery with a mock stdio server', async () => {

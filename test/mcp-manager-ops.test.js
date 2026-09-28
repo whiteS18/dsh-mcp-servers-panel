@@ -8,6 +8,19 @@ import {
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
+
+async function rmSafe(dir) {
+  for (let i = 0; i < 8; i++) {
+    try {
+      await rm(dir, { recursive: true, force: true })
+      return
+    } catch (err) {
+      if (err?.code !== 'EBUSY' && err?.code !== 'ENOTEMPTY' && err?.code !== 'EPERM') throw err
+      await sleep(80 * (i + 1))
+    }
+  }
+}
 
 test('McpManager save, toggle, delete, and list operations with workspace scope', async () => {
   const wsDir = await mkdtemp(join(tmpdir(), 'mcp-ws-'))
@@ -36,7 +49,7 @@ test('McpManager save, toggle, delete, and list operations with workspace scope'
     workspacePath: wsDir,
     server: {
       transport: 'stdio',
-      command: 'echo',
+      command: 'dsh-mcp-missing-bin',
       args: ['hello'],
     },
   })
@@ -76,8 +89,8 @@ test('McpManager save, toggle, delete, and list operations with workspace scope'
   assert.equal(wsContentDeleted.servers.length, 0)
 
   manager.dispose()
-  await rm(wsDir, { recursive: true, force: true })
-  await rm(userDir, { recursive: true, force: true })
+  await rmSafe(wsDir)
+  await rmSafe(userDir)
 })
 
 test('createOnly rejects adding the same MCP name in the same workspace', async () => {
@@ -98,7 +111,7 @@ test('createOnly rejects adding the same MCP name in the same workspace', async 
     createOnly: true,
     server: {
       transport: 'stdio',
-      command: 'npx',
+      command: 'dsh-mcp-missing-bin',
       args: ['-y', 'pkg'],
     },
   })
@@ -111,7 +124,7 @@ test('createOnly rejects adding the same MCP name in the same workspace', async 
       createOnly: true,
       server: {
         transport: 'stdio',
-        command: 'npx',
+        command: 'dsh-mcp-missing-bin',
         args: ['-y', 'pkg'],
       },
     }),
@@ -123,7 +136,7 @@ test('createOnly rejects adding the same MCP name in the same workspace', async 
       rawJson: JSON.stringify({
         mcpServers: {
           'fast-context': {
-            command: 'npx',
+            command: 'dsh-mcp-missing-bin',
             args: ['-y', 'pkg'],
           },
         },
@@ -142,7 +155,7 @@ test('createOnly rejects adding the same MCP name in the same workspace', async 
     workspacePath: wsDir,
     server: {
       transport: 'stdio',
-      command: 'npx',
+      command: 'dsh-mcp-missing-bin',
       args: ['-y', 'pkg-updated'],
     },
   })
@@ -152,7 +165,7 @@ test('createOnly rejects adding the same MCP name in the same workspace', async 
   assert.deepEqual(listed.servers[0].args, ['-y', 'pkg-updated'])
 
   manager.dispose()
-  await rm(wsDir, { recursive: true, force: true })
+  await rmSafe(wsDir)
 })
 
 test('defaultWorkspaceRoot never treats the home directory as a workspace', () => {
@@ -186,7 +199,7 @@ test('user and workspace MCP configs are isolated: list and delete do not cross 
     name: 'fast-context',
     scope: 'user',
     createOnly: true,
-    server: { transport: 'stdio', command: 'npx', args: ['-y', 'global-pkg'] },
+    server: { transport: 'stdio', command: 'dsh-mcp-missing-bin', args: ['-y', 'global-pkg'] },
   })
 
   await manager.saveServer({
@@ -194,7 +207,7 @@ test('user and workspace MCP configs are isolated: list and delete do not cross 
     scope: 'workspace',
     workspacePath: wsDir,
     createOnly: true,
-    server: { transport: 'stdio', command: 'npx', args: ['-y', 'workspace-pkg'] },
+    server: { transport: 'stdio', command: 'dsh-mcp-missing-bin', args: ['-y', 'workspace-pkg'] },
   })
 
   const userList = await manager.list({ scope: 'user' })
@@ -226,8 +239,8 @@ test('user and workspace MCP configs are isolated: list and delete do not cross 
   assert.equal(userContent.servers[0].name, 'fast-context')
 
   manager.dispose()
-  await rm(wsDir, { recursive: true, force: true })
-  await rm(userDir, { recursive: true, force: true })
+  await rmSafe(wsDir)
+  await rmSafe(userDir)
 })
 
 test('saving a workspace MCP starts a runner even if it is not the active workspace', async () => {
@@ -251,7 +264,7 @@ test('saving a workspace MCP starts a runner even if it is not the active worksp
     workspacePath: wsDir,
     server: {
       transport: 'stdio',
-      command: 'echo',
+      command: 'dsh-mcp-missing-bin',
       args: ['hello'],
       enabled: false,
     },
@@ -268,7 +281,7 @@ test('saving a workspace MCP starts a runner even if it is not the active worksp
   assert.equal(listed.servers[0].status, 'disabled')
 
   manager.dispose()
-  await rm(wsDir, { recursive: true, force: true })
-  await rm(otherDir, { recursive: true, force: true })
-  await rm(userDir, { recursive: true, force: true })
+  await rmSafe(wsDir)
+  await rmSafe(otherDir)
+  await rmSafe(userDir)
 })
