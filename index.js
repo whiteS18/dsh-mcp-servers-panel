@@ -9,7 +9,8 @@
  */
 
 import { readFile, writeFile, rename, unlink } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { homedir } from 'node:os'
+import { basename, dirname, join, resolve } from 'node:path'
 
 import {
   DEFAULT_TOOL_CALL_TIMEOUT_MS,
@@ -76,6 +77,109 @@ async function writeFileAtomic(filename, text) {
   }
 }
 
+/** Read one legacy 0.1.x config file; never writes or deletes it. */
+const LEGACY_USER_FILE = join('.dsh', 'mcp.json')
+const LEGACY_USER_FALLBACK = join('.dsh', 'mcp-servers.json')
+
+function legacyProjectCandidates(ctx) {
+  const found = new Map()
+  const add = (path, title = '') => {
+    if (typeof path !== 'string' || path.trim() === '') return
+    let full
+    try {
+      full = resolve(path)
+    } catch {
+      return
+    }
+    const key = process.platform === 'win32' ? full.toLowerCase() : full
+    if (!found.has(key)) found.set(key, { path: full, title: String(title || '') })
+  }
+  try {
+    const registry = safeGet(ctx, 'workspaceRegistry')
+    for (const item of registry?.list?.() || []) add(item?.path, item?.title)
+  } catch {}
+  try {
+    const sessions = safeGet(ctx, 'sessions')
+    for (const session of sessions?.list?.() || []) add(session?.header?.cwd)
+  } catch {}
+  return [...found.values()]
+}
+
+async function readLegacyConfig(path) {
+  let text
+  try {
+    text = await readFile(path, 'utf8')
+  } catch (error) {
+    return error?.code === 'ENOENT' ? null : { error: messageOf(error) }
+  }
+  if (!text.trim()) return null
+  try {
+    const inputs = normalizeIncomingList(text)
+    return {
+      servers: inputs.map((input) => ({
+        name: input.name,
+        enabled: input.enabled !== false,
+        config: input.config,
+      })),
+    }
+  } catch (error) {
+    return { error: messageOf(error) }
+  }
+}
+
+/**
+ * Read legacy 0.1.x panel config files without changing them. Used only to
+ * show the upgrade banner and the selective migration dialog.
+ *
+ * @param {{home?: string, projects?: Array<{path: string, title?: string}>}} options
+ * @returns {Promise<Array<{kind: 'user'|'project', title: string, path: string, servers: Array<object>, error?: string}>>}
+ */
+async function detectLegacyConfigs(options = {}) {
+  const home = typeof options.home === 'string' && options.home ? options.home : homedir()
+  const projects = Array.isArray(options.projects) ? options.projects : []
+  const configs = []
+
+  let userPath = join(home, LEGACY_USER_FILE)
+  let user = await readLegacyConfig(userPath)
+  if (user === null) {
+    const fallbackPath = join(home, LEGACY_USER_FALLBACK)
+    const fallback = await readLegacyConfig(fallbackPath)
+    if (fallback !== null) {
+      user = fallback
+      userPath = fallbackPath
+    }
+  }
+  if (user !== null && (user.servers?.length > 0 || user.error)) {
+    configs.push({ kind: 'user', title: '全局 (用户)', path: userPath, ...user })
+  }
+
+  for (const project of projects) {
+    if (typeof project?.path !== 'string' || !project.path) continue
+    const path = join(project.path, '.dsh', 'mcp.json')
+    const entry = await readLegacyConfig(path)
+    if (entry !== null && (entry.servers?.length > 0 || entry.error)) {
+      configs.push({
+        kind: 'project',
+        title: String(project.title || ''),
+        path,
+        ...entry,
+      })
+    }
+  }
+  return configs
+}
+
+function summarizeLegacyConfigs(configs) {
+  return configs.map((config) => ({
+    kind: config.kind,
+    title: config.title,
+    path: config.path,
+    count: Array.isArray(config.servers) ? config.servers.length : 0,
+    names: (config.servers || []).map((server) => server.name),
+    ...(config.error ? { error: config.error } : {}),
+  }))
+}
+
 function defaultConfig(raw) {
   const source = isRecord(raw) ? raw : {}
   const transport = source.transport === 'streamable-http' ? 'streamable-http' : 'stdio'
@@ -106,6 +210,8 @@ export class McpManager {
     this.ctx = ctx
     this.profileOverride = options.profile
     this.patchPathOverride = options.patchPath
+    this.legacyHome = options.legacyHome || homedir()
+    this.legacyProjects = Array.isArray(options.legacyProjects) ? options.legacyProjects : undefined
     this.chain = Promise.resolve()
     this.disposed = false
   }
@@ -283,6 +389,12 @@ export class McpManager {
     }
   }
 
+  async legacyConfigs() {
+    if (!this.canManage) return { configs: [] }
+    const projects = this.legacyProjects ?? legacyProjectCandidates(this.ctx)
+    return { configs: await detectLegacyConfigs({ home: this.legacyHome, projects }) }
+  }
+
   async list() {
     const profile = this.profileInfo()
     const warnings = []
@@ -334,11 +446,13 @@ export class McpManager {
       .sort((left, right) => left.name.localeCompare(right.name))
     servers.push(...foreign)
 
+    const legacy = await this.legacyConfigs()
     return {
       servers,
       profile,
       nativeControlAvailable: inventory.hasPluginManager,
       canManage: this.canManage,
+      legacyConfigs: summarizeLegacyConfigs(legacy.configs),
       ...warnings.length > 0 ? { warnings } : {},
     }
   }
@@ -399,6 +513,50 @@ export class McpManager {
           .map((input) => panelEntryId(input.name)),
       }
     }, () => this.list())
+  }
+
+  /**
+   * Selectively import legacy panel servers as new profile rows. Existing
+   * panel/foreign rows are never overwritten; every selected name must be new.
+   * Rows are written disabled unless `enable` is true.
+   */
+  async importLegacy(payload = {}) {
+    if (!this.canManage) throw new Error('当前 DSH 运行环境没有提供 profileContext，无法导入 MCP 配置')
+    const rawItems = Array.isArray(payload.items) ? payload.items : []
+    if (rawItems.length === 0) throw new Error('请选择要导入的 MCP 服务器')
+    const enable = payload.enable === true
+    const inputs = rawItems.map((item) => {
+      if (!isRecord(item)) throw new Error('导入项格式无效')
+      const normalized = normalizeServerInput(item.name, item.server || item.config || {})
+      return { ...normalized, enabled: enable }
+    })
+    const seen = new Set()
+    for (const input of inputs) {
+      if (seen.has(input.name)) throw new Error('导入项包含重复的服务名「' + input.name + '」')
+      seen.add(input.name)
+    }
+
+    return await this.transact(async (patch) => {
+      const panelNames = new Set(patch.panelRows().map((row) => row.serverName))
+      const foreignNames = await this.foreignNameMap()
+      const foreignInPatch = new Map()
+      for (const row of patch.rows()) {
+        if (row.panelManaged || !row.serverName) continue
+        foreignInPatch.set(row.serverName, row)
+      }
+      for (const input of inputs) {
+        if (panelNames.has(input.name)) {
+          throw new Error('已存在 MCP 服务「' + input.name + '」；请先删除或改名后再导入。')
+        }
+        if (foreignNames.has(input.name) || foreignInPatch.has(input.name)) {
+          throw new Error('服务名「' + input.name + '」已被插件清单中的条目使用；请先移除或改名。')
+        }
+      }
+      for (const input of inputs) patch.upsertServer(input)
+      return {
+        requiredIds: enable ? inputs.map((input) => panelEntryId(input.name)) : [],
+      }
+    }, async () => ({ ...(await this.list()), imported: inputs.length }))
   }
 
   async deleteServer(payload = {}) {
@@ -519,6 +677,8 @@ function registerRpc(ctx, manager) {
           try {
             switch (endpoint) {
               case 'list': return ok(await manager.list())
+              case 'legacy': return ok(await manager.legacyConfigs())
+              case 'import': return ok(await manager.importLegacy(payload || {}))
               case 'save': return ok(await manager.saveServer(payload || {}))
               case 'delete': return ok(await manager.deleteServer(payload || {}))
               case 'toggle': return ok(await manager.toggleServer(payload || {}))
@@ -564,6 +724,8 @@ function registerWebServer(ctx, manager) {
 
     const routes = [
       ['list', (body) => manager.list(body || {})],
+      ['legacy', () => manager.legacyConfigs()],
+      ['import', (body) => manager.importLegacy(body || {})],
       ['save', (body) => manager.saveServer(body || {})],
       ['delete', (body) => manager.deleteServer(body || {})],
       ['toggle', (body) => manager.toggleServer(body || {})],
@@ -610,6 +772,7 @@ export function apply(ctx) {
 export {
   PANEL_ENTRY_PREFIX,
   ProfilePatch,
+  detectLegacyConfigs,
   normalizeIncomingList,
   normalizeServerInput,
   panelEntryId,

@@ -197,6 +197,27 @@ window.__ModuleLoader__.load({
       nameUnresolved: '无法确定服务名称，请使用 {"服务名": {...}} 形式，或提供 serverName。',
       loadFailed: '加载 MCP 服务器失败',
       actionFailed: '操作失败',
+      legacyTitle: '检测到旧版 MCP 配置',
+      legacyBody: '0.2.0 不再读取旧版 mcp.json（{files} 个文件，共 {count} 个服务器）：{paths}。可以逐条选择导入，不会自动合并；导入后为当前 profile 的全局配置，默认禁用。',
+      legacyOpen: '查看并导入',
+      legacyDismiss: '忽略',
+      legacyImportTitle: '导入旧版 MCP 配置',
+      legacyImportSubtitle: '0.2.0 不再读取旧版 mcp.json。勾选要导入的服务器；导入后写入当前 profile 的 patch，默认禁用，可稍后在列表中启用。',
+      legacySourceUser: '全局 (用户)',
+      legacySourceProject: '工作区',
+      legacyImportEnable: '导入后立即启用',
+      legacyImportConfirm: '导入选中的 {count} 项',
+      legacyImportNone: '请至少勾选一个服务器',
+      legacyImportEmpty: '没有可导入的服务器',
+      legacyConflict: '重名',
+      legacyConflictHint: '重名：请先在面板中删除同名条目，或改名后手动导入；也可以取消勾选。',
+      legacyFileError: '读取失败：{message}',
+      legacyImported: '已导入 {count} 个 MCP 服务器（{state}）。旧配置文件未删除，可自行备份或清理。',
+      legacyImportedDisabled: '默认禁用，可在列表中逐条启用',
+      legacyImportedEnabled: '已启用',
+      legacyIgnored: '已忽略旧版配置提示。',
+      legacyManualHint: '也可以取消导入，在 JSON 模式中手动粘贴配置。',
+      legacyLoading: '正在读取旧版配置...',
     }
 
     function translate(key, params) {
@@ -739,6 +760,91 @@ window.__ModuleLoader__.load({
         fontSize: 12,
         color: 'var(--dsw-alias-state-error-primary, #ef4444)',
       },
+      legacyFile: {
+        border: '1px solid var(--dsw-alias-border-l2)',
+        borderRadius: 12,
+        background: 'var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-module-platform))',
+        padding: '12px 16px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+      },
+      legacyFileHead: {
+        display: 'flex',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+        gap: 12,
+        flexWrap: 'wrap',
+      },
+      legacyFilePath: {
+        fontSize: 12,
+        lineHeight: '18px',
+        color: 'var(--dsw-alias-label-tertiary)',
+        wordBreak: 'break-all',
+        fontFamily: 'Menlo, Monaco, Consolas, monospace',
+      },
+      legacyServer: {
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: 10,
+        padding: '8px 0',
+        borderTop: '1px solid var(--dsw-alias-border-l1)',
+      },
+      legacyServerMain: {
+        flex: 1,
+        minWidth: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 2,
+      },
+      legacyServerName: {
+        fontSize: 13,
+        fontWeight: 500,
+        color: 'var(--dsw-alias-label-primary)',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      },
+      legacyServerMeta: {
+        fontSize: 12,
+        lineHeight: '18px',
+        color: 'var(--dsw-alias-label-tertiary)',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      },
+      legacyCheckbox: {
+        width: 16,
+        height: 16,
+        marginTop: 2,
+        flexShrink: 0,
+        accentColor: 'var(--dsw-alias-brand-primary)',
+      },
+      legacyConflict: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        marginTop: 2,
+        fontSize: 11,
+        lineHeight: '16px',
+        padding: '0 6px',
+        borderRadius: 4,
+        background: 'var(--dsw-alias-state-warn-tertiary, rgba(245, 158, 11, 0.08))',
+        color: 'var(--dsw-alias-state-warn-label, #b45309)',
+        border: '0.5px solid var(--dsw-alias-state-warn-secondary, rgba(245, 158, 11, 0.35))',
+      },
+      legacyHint: {
+        margin: 0,
+        fontSize: 12,
+        lineHeight: '18px',
+        color: 'var(--dsw-alias-label-tertiary)',
+      },
+      legacyActions: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'flex-end',
+        gap: 8,
+        paddingTop: 4,
+      },
       emptyBox: {
         padding: '32px 16px',
         textAlign: 'center',
@@ -1224,6 +1330,197 @@ window.__ModuleLoader__.load({
       )
     }
 
+    const LEGACY_DISMISS_KEY = 'dsh-mcp-servers-panel:legacy-dismissed'
+
+    function readLegacyDismissed() {
+      try {
+        if (typeof localStorage === 'undefined') return new Set()
+        const parsed = JSON.parse(localStorage.getItem(LEGACY_DISMISS_KEY) || '[]')
+        return new Set(Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : [])
+      } catch {
+        return new Set()
+      }
+    }
+
+    function writeLegacyDismissed(paths) {
+      try {
+        if (typeof localStorage === 'undefined') return
+        localStorage.setItem(LEGACY_DISMISS_KEY, JSON.stringify([...paths]))
+      } catch {}
+    }
+
+    function legacyServerMeta(config) {
+      if (!config || typeof config !== 'object') return ''
+      if (config.transport === 'streamable-http') {
+        return 'streamable-http · ' + String(config.url || '')
+      }
+      const args = Array.isArray(config.args) ? config.args.join(' ') : ''
+      return 'stdio · ' + [config.command, args].filter(Boolean).join(' ')
+    }
+
+    /**
+     * Selective migration of 0.1.x mcp.json files. Nothing is imported until
+     * the user checks entries and confirms; rows are written disabled by
+     * default and legacy files are never modified or deleted.
+     */
+    function LegacyImportView(props) {
+      const { connection, existingNames, onCancel, onImported } = props
+      const rpc = connection?.rpc
+      const [configs, setConfigs] = useState([])
+      const [selected, setSelected] = useState(new Set())
+      const [enable, setEnable] = useState(false)
+      const [loading, setLoading] = useState(true)
+      const [loadError, setLoadError] = useState('')
+      const [error, setError] = useState('')
+      const [busy, setBusy] = useState(false)
+
+      useEffect(() => {
+        let cancelled = false
+        ;(async () => {
+          try {
+            const response = await apiCall(rpc, 'legacy', {})
+            if (cancelled) return
+            const next = Array.isArray(response?.configs) ? response.configs : []
+            setConfigs(next)
+            const counts = new Map()
+            for (const config of next) {
+              for (const server of config.servers || []) {
+                counts.set(server.name, (counts.get(server.name) || 0) + 1)
+              }
+            }
+            const preselected = new Set()
+            for (const config of next) {
+              for (const server of config.servers || []) {
+                if (existingNames.has(server.name) || (counts.get(server.name) || 0) > 1) continue
+                preselected.add(config.path + '::' + server.name)
+              }
+            }
+            setSelected(preselected)
+          } catch (err) {
+            if (!cancelled) setLoadError(err?.message || String(err))
+          } finally {
+            if (!cancelled) setLoading(false)
+          }
+        })()
+        return () => { cancelled = true }
+      }, [rpc, existingNames])
+
+      if (loading) {
+        return h('div', { style: css.container },
+          h('div', { style: css.emptyBox }, translate('legacyLoading')))
+      }
+
+      const counts = new Map()
+      for (const config of configs) {
+        for (const server of config.servers || []) counts.set(server.name, (counts.get(server.name) || 0) + 1)
+      }
+      const rows = []
+      for (const config of configs) {
+        for (const server of config.servers || []) rows.push({ config, server, key: config.path + '::' + server.name })
+      }
+      const selectedRows = rows.filter((row) => selected.has(row.key))
+      const fullySelected = configs
+        .filter((config) => (config.servers || []).length > 0 && (config.servers || []).every((server) => selected.has(config.path + '::' + server.name)))
+        .map((config) => config.path)
+
+      function toggle(key) {
+        setSelected((prev) => {
+          const next = new Set(prev)
+          if (next.has(key)) next.delete(key)
+          else next.add(key)
+          return next
+        })
+      }
+
+      async function handleImport() {
+        if (selectedRows.length === 0) {
+          setError(translate('legacyImportNone'))
+          return
+        }
+        setBusy(true)
+        setError('')
+        try {
+          await apiCall(rpc, 'import', {
+            enable,
+            items: selectedRows.map((row) => ({ name: row.server.name, server: row.server.config })),
+          })
+          if (onImported) onImported({ count: selectedRows.length, enable, paths: fullySelected })
+        } catch (err) {
+          setError(err?.message || String(err))
+          setBusy(false)
+        }
+      }
+
+      return h('div', { style: css.container },
+        h('div', { style: css.header },
+          h('div', null,
+            h('h2', { style: css.title }, translate('legacyImportTitle')),
+            h('p', { style: css.subtitle }, translate('legacyImportSubtitle'))
+          )
+        ),
+        loadError ? h('div', { style: css.errorBox }, loadError) : null,
+        error ? h('div', { style: css.errorBox }, error) : null,
+        configs.length === 0
+          ? h('div', { style: css.emptyBox }, translate('legacyImportEmpty'))
+          : configs.map((config) => h('div', { key: config.path, style: css.legacyFile },
+              h('div', { style: css.legacyFileHead },
+                h('span', { style: { fontSize: 13, fontWeight: 500, color: 'var(--dsw-alias-label-primary)' } },
+                  (config.kind === 'user' ? translate('legacySourceUser') : (config.title || translate('legacySourceProject')))
+                  + ' · ' + (config.servers || []).length)
+              ),
+              h('div', { style: css.legacyFilePath }, config.path),
+              config.error
+                ? h('div', { style: css.errorText }, translate('legacyFileError', { message: config.error }))
+                : null,
+              (config.servers || []).map((server) => {
+                const key = config.path + '::' + server.name
+                const conflict = existingNames.has(server.name) || (counts.get(server.name) || 0) > 1
+                return h('label', { key, style: css.legacyServer },
+                  h('input', {
+                    type: 'checkbox',
+                    style: css.legacyCheckbox,
+                    checked: selected.has(key),
+                    disabled: busy || conflict,
+                    onChange: () => toggle(key),
+                  }),
+                  h('div', { style: css.legacyServerMain },
+                    h('span', { style: css.legacyServerName }, server.name),
+                    h('span', { style: css.legacyServerMeta }, legacyServerMeta(server.config)),
+                    conflict
+                      ? h('span', { style: css.legacyConflict, title: translate('legacyConflictHint') }, translate('legacyConflict'))
+                      : null
+                  )
+                )
+              })
+            ))
+        ,
+        h('p', { style: css.legacyHint }, translate('legacyManualHint')),
+        h('div', { style: css.legacyActions },
+          h('label', { style: { display: 'flex', alignItems: 'center', gap: 6, marginRight: 'auto', fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } },
+            h('input', {
+              type: 'checkbox',
+              checked: enable,
+              disabled: busy,
+              onChange: (e) => setEnable(e.target.checked),
+            }),
+            translate('legacyImportEnable')
+          ),
+          h('button', {
+            type: 'button',
+            style: css.btnSecondary,
+            onClick: onCancel,
+            disabled: busy,
+          }, translate('cancel')),
+          h('button', {
+            type: 'button',
+            style: css.btnPrimary,
+            onClick: handleImport,
+            disabled: busy || selectedRows.length === 0,
+          }, busy ? translate('saving') : translate('legacyImportConfirm', { count: selectedRows.length }))
+        )
+      )
+    }
+
     // Main Section View
     function McpServersSection(props) {
       ensureSelectCss()
@@ -1235,11 +1532,14 @@ window.__ModuleLoader__.load({
       const [nativeControlAvailable, setNativeControlAvailable] = useState(false)
       const [listWarnings, setListWarnings] = useState([])
       const [loading, setLoading] = useState(true)
-      const [view, setView] = useState('list') // 'list' | 'add' | 'edit'
+      const [view, setView] = useState('list') // 'list' | 'add' | 'edit' | 'import'
       const [editingServer, setEditingServer] = useState(null)
       const [editorNonce, setEditorNonce] = useState(0)
       const [expanded, setExpanded] = useState(new Set())
       const [sourceFilter, setSourceFilter] = useState('all')
+      const [legacy, setLegacy] = useState([])
+      const [legacyDismissed, setLegacyDismissed] = useState(() => readLegacyDismissed())
+      const [legacyNotice, setLegacyNotice] = useState('')
       const [actionBusy, setActionBusy] = useState(false)
       const [restartNotice, setRestartNotice] = useState('')
       const [listError, setListError] = useState(null)
@@ -1264,9 +1564,30 @@ window.__ModuleLoader__.load({
         })
       }, [servers, sourceFilter])
 
+      const existingNames = useMemo(() => new Set(servers.map((server) => server.name)), [servers])
+
+      const visibleLegacy = useMemo(() => {
+        return (legacy || []).filter((item) => {
+          if (legacyDismissed.has(item.path)) return false
+          const names = Array.isArray(item.names) ? item.names : []
+          if (names.length > 0 && names.every((name) => existingNames.has(name))) return false
+          return true
+        })
+      }, [legacy, legacyDismissed, existingNames])
+
+      const dismissLegacy = useCallback((paths) => {
+        setLegacyDismissed((prev) => {
+          const next = new Set(prev)
+          for (const path of paths || []) next.add(path)
+          writeLegacyDismissed(next)
+          return next
+        })
+      }, [])
+
       const applyResponse = useCallback((response) => {
         if (!response || typeof response !== 'object') return
         if (Array.isArray(response.servers)) setServers(response.servers)
+        if (Array.isArray(response.legacyConfigs)) setLegacy(response.legacyConfigs)
         if (response.profile && typeof response.profile === 'object') setProfile(response.profile)
         if (typeof response.canManage === 'boolean') setCanManage(response.canManage)
         if (typeof response.nativeControlAvailable === 'boolean') {
@@ -1359,6 +1680,25 @@ window.__ModuleLoader__.load({
         }
       }
 
+      if (view === 'import') {
+        return h(LegacyImportView, {
+          connection: props.connection,
+          existingNames,
+          onCancel: () => setView('list'),
+          onImported: (result) => {
+            if (result?.paths?.length) dismissLegacy(result.paths)
+            setLegacyNotice(translate('legacyImported', {
+              count: result?.count ?? 0,
+              state: result?.enable
+                ? translate('legacyImportedEnabled')
+                : translate('legacyImportedDisabled'),
+            }))
+            setView('list')
+            refresh()
+          },
+        })
+      }
+
       if (view === 'add' || view === 'edit') {
         return h(ServerEditor, {
           key: view === 'edit'
@@ -1396,6 +1736,38 @@ window.__ModuleLoader__.load({
           renderBanner('error', listError.title, listError.message)
         ))
       }
+
+      const legacyServerCount = visibleLegacy.reduce((sum, item) => sum + (item.count || 0), 0)
+      const legacyPaths = visibleLegacy.slice(0, 2).map((item) => item.path).join('、')
+        + (visibleLegacy.length > 2 ? ' 等 ' + visibleLegacy.length + ' 个文件' : '')
+      const legacyBanner = visibleLegacy.length > 0
+        ? h('div', { style: { ...css.banner, ...css.bannerWarning } },
+            h('span', { style: css.bannerIcon }, h(Icons.Alert, { size: 14 })),
+            h('div', { style: css.bannerBody },
+              h('div', { style: css.bannerTitle }, translate('legacyTitle')),
+              h('div', null, translate('legacyBody', {
+                files: visibleLegacy.length,
+                count: legacyServerCount,
+                paths: legacyPaths,
+              })),
+              h('div', { style: { display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' } },
+                h('button', {
+                  type: 'button',
+                  style: css.btnSecondary,
+                  onClick: () => setView('import'),
+                }, translate('legacyOpen')),
+                h('button', {
+                  type: 'button',
+                  style: css.btnSecondary,
+                  onClick: () => {
+                    dismissLegacy(visibleLegacy.map((item) => item.path))
+                    setLegacyNotice(translate('legacyIgnored'))
+                  },
+                }, translate('legacyDismiss'))
+              )
+            )
+          )
+        : null
 
       return h('div', { style: css.container },
         // Top Header Bar — same layout as 0.1.7: title block, then the
@@ -1444,6 +1816,10 @@ window.__ModuleLoader__.load({
           )
         ),
 
+        legacyBanner,
+        legacyNotice
+          ? renderBanner('info', translate('warningsTitle'), legacyNotice)
+          : null,
         banners.length > 0 ? banners : null,
 
         // Server List

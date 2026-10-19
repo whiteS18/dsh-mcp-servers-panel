@@ -6,6 +6,9 @@ DSH（DeepSeek Harness）的 MCP 服务器管理面板插件。
 
 MCP 的 stdio / Streamable HTTP 传输、进程启动、协议握手、自动重连、工具注册、资源与清理，全部由官方客户端负责。面板不再自行启动 MCP 进程，也不再实现或转发 MCP JSON-RPC。
 
+> [!WARNING]
+> **0.2.0 是 breaking change。** 面板不再读取旧版 `~/.dsh/mcp.json` 与 `<workspace>/.dsh/mcp.json`，也**不会自动合并**它们；旧版面板管理的 MCP 不会随升级继续运行。面板检测到旧文件时会显示提示，可在「查看并导入」中**逐条选择**导入：默认写入禁用行，导入后是当前 profile 的全局配置（不再按工作区区分），同名条目会被标记并默认不可选。旧文件不会被修改或删除。
+
 ---
 
 ## 0.2.0 的职责边界
@@ -32,8 +35,8 @@ MCP 的 stdio / Streamable HTTP 传输、进程启动、协议握手、自动重
 0.2.0 只管理当前活动 profile：
 
 - 用户级 / 工作区级的作用域概念已移除，界面没有作用域选择器。
-- 旧版的 `~/.dsh/mcp.json` 与 `<workspace>/.dsh/mcp.json` 不再被读取或写入。
-- 如需沿用旧配置，可在编辑器的 JSON 模式中粘贴原有服务器配置批量导入。
+- 旧版的 `~/.dsh/mcp.json` 与 `<workspace>/.dsh/mcp.json` 不再被读取或写入；面板只在启动/刷新时为升级提示**只读**这些文件。
+- 如需沿用旧配置：在升级横幅中点「查看并导入」，逐条勾选要迁移的服务器；也可以取消后在编辑器的 JSON 模式中手动粘贴。导入后写入当前 profile 的 `cordis.patch.yml`，默认禁用。
 
 ### 面板行
 
@@ -175,7 +178,7 @@ MCP 的 stdio / Streamable HTTP 传输、进程启动、协议握手、自动重
 7. **安全**
    - 管理接口只接受回环地址（`127.0.0.0/8`、`::1`、IPv4 映射的 `::ffff:127.x`），其他来源拒绝。
    - HTTP 请求体上限为 256 KB，响应使用 `Cache-Control: no-store`。
-   - 前端通过 loopback RPC 调用管理接口；宿主也在同一前缀提供 loopback HTTP 端点（`list` / `save` / `delete` / `toggle` / `reload`）。
+   - 前端通过 loopback RPC 调用管理接口；宿主也在同一前缀提供 loopback HTTP 端点（`list` / `legacy` / `import` / `save` / `delete` / `toggle` / `reload`）。
    - HTTP 入口仍受 DSH Web 服务自身的访问控制（未携带会话凭据的请求会被拒绝）；仍不要在不可信的多用户环境暴露管理接口。
 
 ---
@@ -215,12 +218,31 @@ dsh plugin --profile <name> add /绝对路径/dsh-mcp-servers-panel
 - 移除自建的 stdio / HTTP 传输、MCP 握手、工具注册与注销、重连和进程树清理。
 - 移除 Windows `spawn` 包装与 PATH 探测补全；stdio 命令的解析和启动由官方客户端及其 MCP SDK 负责。
 - 移除用户 / 工作区作用域，只管理当前活动 profile。
-- 不再读取或写入旧版 `mcp.json`。
+- 不再读取或写入旧版 `mcp.json`；只读检测旧文件，并在界面上提供**逐条选择**的迁移导入（`legacy` / `import` 接口）。不会自动合并，导入默认禁用且为 profile 全局配置。
 - 新增对 profile patch 的 YAML Document 读写、对非面板行的只读展示、重名校验，以及重启提示横幅。
 
 ---
 
+## 从 0.1.x 迁移
+
+1. 升级并完全重启 DSH。旧面板管理的 MCP 不会继续运行，这是 0.2.0 的预期行为。
+2. 打开 设置 → MCP 服务器。如果存在旧配置，顶部会出现「检测到旧版 MCP 配置」横幅。
+3. 点「查看并导入」，勾选要迁移的服务器；不会自动合并。与既有面板行、插件清单行或其他旧配置重名的条目会标记「重名」且默认不可选，需要先删除/改名，或手动在 JSON 模式中改名导入。
+4. 「导入后立即启用」默认关闭：导入先写成 `disabled: true` 的行，确认无误后在列表中逐条启用。导入后是当前 profile 的全局配置，不再保留原工作区区别。
+5. 旧文件（`~/.dsh/mcp.json`、`<workspace>/.dsh/mcp.json`）不会被修改或删除；确认迁移完成后可自行备份/清理。
+6. 也可以直接取消，在「新增 MCP」的 JSON 模式中手动粘贴配置。
+
+> 迁移是**逐条、可取消**的，不会把多个工作区的配置自动合并到一起。
+
+---
+
 ## 修复与变更记录
+
+### 0.2.1
+
+- **新增旧版配置选择性迁移**：面板只读检测 `~/.dsh/mcp.json`、`<workspace>/.dsh/mcp.json`（以及旧版 `mcp-servers.json` 回退）；检测到非空配置时显示升级横幅，点「查看并导入」逐条勾选。`legacy` 接口返回完整配置，`import` 接口按选择写入 profile patch。
+- 迁移**不自动合并**：默认不勾选重名项（与既有面板行、插件清单行或其他旧配置重名）；导入默认 `disabled: true`，可勾选「导入后立即启用」；旧文件只读，从不修改或删除。
+- 新增测试：旧配置检测、摘要脱敏、选择性导入、默认禁用、重名拒绝、旧文件保持不变。
 
 ### 0.2.0
 
@@ -231,6 +253,7 @@ dsh plugin --profile <name> add /绝对路径/dsh-mcp-servers-panel
 - **新增 HMR 生效路径**：在 `hmr.runExclusive` 事务中写入并 `reconcileProfile`，失败时恢复旧文本；没有 HMR 时返回 `restart-required` 并显示警告横幅。
 - **新增非面板行处理**：识别 Magpie（`magpie-mcp-*`）与其他插件清单写入的 `@deepseek-ai/dsh-mcp-client` 行，只读展示，启停交由 `pluginManager.setPluginEnabled`。
 - **新增重名校验**：保存前同时检查面板行和所有 `@deepseek-ai/dsh-mcp-client` 行（含已禁用行）；`serverName` 规则为 `^[A-Za-z0-9_-]{1,32}$`；重命名到另一条面板服务器会拒绝，避免覆盖。
+- **新增旧版配置迁移**：只读检测 `~/.dsh/mcp.json`、`<workspace>/.dsh/mcp.json`（以及旧版 `mcp-servers.json` 回退），列表响应带 `legacyConfigs` 摘要；`legacy` 返回完整配置，`import` 按用户勾选逐条写入 profile patch。默认禁用、不覆盖既有行、不修改旧文件、不自动合并。
 - **移除**：自建进程与传输、MCP JSON-RPC 握手与工具桥接、工具注册与注销、自建重连和进程树清理、Windows spawn 包装与 PATH 探测、用户 / 工作区作用域、旧版 `mcp.json` 读写。
 - **测试更新**：`npm test` 覆盖 patch 文档读写、管理器操作与重名、Loader 行来源与外来行、安全校验，以及 `client.js` 的静态检查。
 
@@ -294,8 +317,9 @@ npm test
 - patch 文档的读取、插入、更新与删除，以及无关条目的注释和 `!!js` 标签保留；
 - 管理器的新增、编辑、启停、删除、重名拒绝，以及写失败时的恢复；
 - Loader 行的来源识别、非面板行只读与启停、官方客户端行重复名称；
+- 旧版 `mcp.json` 的只读检测、摘要脱敏、选择性导入、默认禁用、重名拒绝，以及旧文件保持不变；
 - 回环访问等安全校验；
-- `client.js` 的静态检查：语法、旧作用域标识已移除、新的 API 字段存在。
+- `client.js` 的静态检查：语法、旧作用域标识已移除、新的 API 字段与迁移流程存在。
 
 ---
 
@@ -303,7 +327,7 @@ npm test
 
 - 面板需要 `profileContext`；没有该上下文时只能显示提示，不能管理配置。
 - 没有 HMR 的宿主中，修改需要重启 DSH 才能生效；面板会显示重启提示。
-- 面板只管理当前活动 profile，不修改其他 profile，也不读取旧版 `mcp.json`。
+- 面板只管理当前活动 profile，不修改其他 profile；旧版 `mcp.json` 只读用于升级提示和选择性导入，从不修改或删除。
 - 非面板行只能启停，不能编辑或删除；这些条目应在写入它们的工具或 DSH 插件设置中维护。
 - `serverName` 必须在面板管理的 profile 内唯一（`^[A-Za-z0-9_-]{1,32}$`）；官方客户端会拒绝重复项。
 - 面板不包装命令、不探测或补全 PATH；stdio 启动失败由官方客户端报告，面板只展示 Loader 状态与错误。

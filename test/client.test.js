@@ -67,6 +67,21 @@ test('client.js sends the patch-backed host payloads', () => {
   assert.match(source, /replaceName/)
 })
 
+test('client.js exposes the selective legacy-config migration flow', () => {
+  const required = [
+    'legacyConfigs',
+    "apiCall(rpc, 'legacy', {})",
+    "apiCall(rpc, 'import'",
+    'legacyDismissed',
+    'legacyImportTitle',
+    'legacyImportConfirm',
+    'legacySourceProject',
+  ]
+  for (const needle of required) {
+    assert.ok(source.includes(needle), `client.js is missing ${needle}`)
+  }
+})
+
 test('client.js registers the settings section through the module loader', () => {
   const loaded = []
   const win = {

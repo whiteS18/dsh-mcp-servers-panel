@@ -1,6 +1,6 @@
 {
   "name": "dsh-mcp-servers-panel",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DSH MCP 服务器管理插件：在设置中提供 MCP Servers 管理面板，负责把服务器配置写入当前 Profile 的 cordis.patch.yml 并启停官方 @deepseek-ai/dsh-mcp-client 条目；连接、重连、工具注册与 teardown 由官方 client 负责。",
   "keywords": [
     "deepseek",
@@ -15,7 +15,7 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "node --test test/patch-store.test.js test/manager.test.js test/native-mcp.test.js test/security.test.js test/apply-endpoints.test.js test/client.test.js"
+    "test": "node --test test/patch-store.test.js test/manager.test.js test/migration.test.js test/native-mcp.test.js test/security.test.js test/apply-endpoints.test.js test/client.test.js"
   },
   "exports": {
     ".": "./index.js",
