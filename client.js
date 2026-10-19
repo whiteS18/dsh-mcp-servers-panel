@@ -152,6 +152,19 @@ window.__ModuleLoader__.load({
       cancel: '取消',
       saving: '保存中...',
       emptyList: '当前视图下暂无已配置的 MCP 服务，点击右上角「新增 MCP」添加。',
+      sourcePanel: '面板',
+      sourceMagpie: 'Magpie',
+      sourcePluginEntry: '插件清单',
+      sourcePanelHint: '该服务器由本面板管理，配置保存在 mcp.json。',
+      sourcePanelWithPluginHint: '该服务器由本面板管理；插件清单中的同名条目（{entry}）由面板同步启停。',
+      pluginEntryHint: '该服务器来自 DSH 插件清单（可能由 Magpie 等第三方工具写入），不是面板配置。',
+      pluginEntryLabel: '同名插件清单条目',
+      pluginEntryEnabled: '已启用',
+      pluginEntryDisabled: '已禁用',
+      warningTitle: '提示',
+      readonlyPluginHint: '该服务器来自 DSH 插件清单，面板无法编辑或删除；请在列表中用开关启停，或到 DSH 插件设置中管理。',
+      conflictHint: '面板状态与插件清单中的同名条目不一致，请展开查看提示。',
+      confirmDeletePluginEntry: '删除面板配置「{name}」？插件清单中的同名条目（{entry}）会保留并继续运行。要停用它，请使用列表中的开关。',
       invalidJson: 'JSON 格式不正确，请检查语法',
       nameRequired: '请输入服务名称',
       commandRequired: 'stdio 传输方式必须指定执行命令',
@@ -394,6 +407,16 @@ window.__ModuleLoader__.load({
         flexShrink: 0,
         fontFamily: 'monospace',
       },
+      sourceBadge: {
+        fontSize: 11,
+        lineHeight: '16px',
+        padding: '1px 6px',
+        borderRadius: 4,
+        background: 'var(--dsw-alias-state-info-bg, rgba(59, 130, 246, 0.1))',
+        color: 'var(--dsw-alias-state-info-primary, #3b82f6)',
+        border: '0.5px solid var(--dsw-alias-state-info-border, rgba(59, 130, 246, 0.35))',
+        flexShrink: 0,
+      },
       statusDot: (status) => ({
         width: 8,
         height: 8,
@@ -459,6 +482,18 @@ window.__ModuleLoader__.load({
         display: 'flex',
         flexDirection: 'column',
         gap: 8,
+      },
+      warningBox: {
+        marginTop: 6,
+        padding: '8px 10px',
+        borderRadius: 8,
+        background: 'var(--dsw-alias-state-warning-bg, rgba(245, 158, 11, 0.08))',
+        border: '1px solid var(--dsw-alias-state-warning-border, rgba(245, 158, 11, 0.35))',
+        color: 'var(--dsw-alias-label-secondary)',
+        fontSize: 12,
+        lineHeight: '18px',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
       },
       errorBox: {
         marginTop: 6,
@@ -1070,7 +1105,13 @@ window.__ModuleLoader__.load({
       }
 
       async function handleDelete(server) {
-        if (!confirm(translate('confirmDelete', { name: server.name }))) return
+        const entryId = server.pluginEntry?.patchEntryId
+          || (server.source === 'plugin' ? server.patchEntryId : '')
+          || ''
+        const message = entryId
+          ? translate('confirmDeletePluginEntry', { name: server.name, entry: entryId })
+          : translate('confirmDelete', { name: server.name })
+        if (!confirm(message)) return
         setActionBusy(true)
         try {
           const view = parseScopeKey(filterScope)
@@ -1169,6 +1210,21 @@ window.__ModuleLoader__.load({
             const scopeLabel = server.scope === 'user'
               ? translate('scopeUser')
               : `${translate('scopeWorkspacePrefix')}${workspaces.find((w) => w.path === server.workspacePath)?.title || server.workspacePath || '当前项目'}`
+            const sourceLabel = server.source === 'panel'
+              ? translate('sourcePanel')
+              : server.origin === 'magpie'
+              ? translate('sourceMagpie')
+              : translate('sourcePluginEntry')
+            const pluginEntry = server.pluginEntry?.patchEntryId
+              ? server.pluginEntry
+              : server.source === 'plugin' && server.patchEntryId
+              ? { patchEntryId: server.patchEntryId, originLabel: server.originLabel, enabled: server.enabled }
+              : null
+            const sourceHint = server.source === 'panel'
+              ? pluginEntry
+                ? translate('sourcePanelWithPluginHint', { entry: pluginEntry.patchEntryId })
+                : translate('sourcePanelHint')
+              : translate('pluginEntryHint')
 
             return h('div', { key: uniqueKey, style: css.serverCard },
               // Main row
@@ -1177,26 +1233,29 @@ window.__ModuleLoader__.load({
                   h('span', { style: css.serverName, title: server.name }, server.name),
                   h('span', { style: css.statusDot(server.status) }),
                   h('span', { style: css.scopeBadge }, scopeLabel),
+                  h('span', { style: css.sourceBadge, title: sourceHint }, sourceLabel),
                   server.transport ? h('span', { style: css.transportBadge }, server.transport) : null
                 ),
                 h('div', { style: css.cardControls },
-                  // Edit
+                  // Edit (native-only rows are owned by the DSH plugin tree)
                   h('button', {
                     type: 'button',
                     style: { ...css.iconBtn, border: 'none', width: 28, height: 28 },
                     onClick: () => {
+                      if (server.readonly) return
                       setEditingServer(server)
                       setView('edit')
                     },
-                    title: translate('edit'),
+                    title: server.readonly ? translate('readonlyPluginHint') : translate('edit'),
+                    disabled: actionBusy || Boolean(server.readonly),
                   }, h(Icons.Edit, { size: 15 })),
                   // Trash
                   h('button', {
                     type: 'button',
                     style: { ...css.iconBtn, border: 'none', width: 28, height: 28 },
                     onClick: () => handleDelete(server),
-                    title: translate('delete'),
-                    disabled: actionBusy,
+                    title: server.readonly ? translate('readonlyPluginHint') : translate('delete'),
+                    disabled: actionBusy || Boolean(server.readonly),
                   }, h(Icons.Trash, { size: 15 })),
                   // Switch
                   h('button', {
@@ -1205,7 +1264,7 @@ window.__ModuleLoader__.load({
                     'aria-checked': server.enabled,
                     style: css.switch(server.enabled),
                     onClick: () => handleToggleEnabled(server),
-                    disabled: actionBusy,
+                    disabled: actionBusy || (Boolean(server.readonly) && server.controllable === false),
                   }, h('span', { style: css.switchKnob(server.enabled) }))
                 )
               ),
@@ -1215,11 +1274,13 @@ window.__ModuleLoader__.load({
                 h('span', { style: { display: 'inline-flex', marginTop: 2, flexShrink: 0 } },
                   isExpanded ? h(Icons.ChevronDown, { size: 14 }) : h(Icons.ChevronRight, { size: 14 })
                 ),
-                h('span', { style: css.subRowText, title: server.error || undefined },
+                h('span', { style: css.subRowText, title: server.error || (server.warnings || []).join('\n') || undefined },
                   server.status === 'connecting'
                     ? translate('connecting')
                     : server.error
                     ? translate('error')
+                    : (server.warnings || []).length > 0
+                    ? translate('conflictHint')
                     : count > 0
                     ? translate('toolsEnabled', { count })
                     : translate('noTools')
@@ -1234,6 +1295,12 @@ window.__ModuleLoader__.load({
                         h('div', { style: css.errorBox }, server.error)
                       )
                     : null,
+                  (server.warnings || []).length > 0
+                    ? h('div', null,
+                        h('div', { style: css.detailTitle }, translate('warningTitle')),
+                        h('div', { style: css.warningBox }, server.warnings.join('\n'))
+                      )
+                    : null,
                   (server.command || server.url)
                     ? h('div', null,
                         h('div', { style: css.detailTitle }, translate('configTitle')),
@@ -1244,7 +1311,16 @@ window.__ModuleLoader__.load({
                             ? h('div', null, h('span', { style: css.configKey }, 'args'), h('span', { style: css.configVal }, server.args.join(' ')))
                             : null,
                           server.cwd ? h('div', null, h('span', { style: css.configKey }, 'cwd'), h('span', { style: css.configVal }, server.cwd)) : null,
-                          server.url ? h('div', null, h('span', { style: css.configKey }, 'url'), h('span', { style: css.configVal }, server.url)) : null
+                          server.url ? h('div', null, h('span', { style: css.configKey }, 'url'), h('span', { style: css.configVal }, server.url)) : null,
+                          pluginEntry
+                            ? h('div', null,
+                                h('span', { style: css.configKey }, translate('pluginEntryLabel')),
+                                h('span', { style: css.configVal },
+                                  pluginEntry.patchEntryId
+                                  + '（' + (pluginEntry.originLabel || '') + '，'
+                                  + (pluginEntry.enabled ? translate('pluginEntryEnabled') : translate('pluginEntryDisabled'))
+                                  + '）'))
+                            : null
                         )
                       )
                     : null,
