@@ -1,7 +1,7 @@
 {
   "name": "dsh-mcp-servers-panel",
-  "version": "0.1.7",
-  "description": "DSH MCP 服务器管理插件：在设置中提供 MCP Servers 管理面板，支持新增、编辑、删除、启停 MCP 服务器，支持表单与 JSON 两种编辑模式及用户/项目作用域切换，并将 MCP 工具注册到 DSH 供对话原生调用。",
+  "version": "0.2.0",
+  "description": "DSH MCP 服务器管理插件：在设置中提供 MCP Servers 管理面板，负责把服务器配置写入当前 Profile 的 cordis.patch.yml 并启停官方 @deepseek-ai/dsh-mcp-client 条目；连接、重连、工具注册与 teardown 由官方 client 负责。",
   "keywords": [
     "deepseek",
     "deepseek-harness",
@@ -15,7 +15,7 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "node --test test/mcp-manager.test.js test/mcp-manager-ops.test.js test/mcp-batch-and-security.test.js test/mcp-lifecycle.test.js test/native-mcp.test.js"
+    "test": "node --test test/patch-store.test.js test/manager.test.js test/native-mcp.test.js test/security.test.js test/apply-endpoints.test.js test/client.test.js"
   },
   "exports": {
     ".": "./index.js",
@@ -25,6 +25,7 @@
   "files": [
     "index.js",
     "native-mcp.js",
+    "patch-store.js",
     "client.js",
     "cordis.patch.yml",
     "README.md",
@@ -58,6 +59,9 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.0",
-    "@deepseek-ai/dsh-tools": ">=0.1.0"
+    "@deepseek-ai/dsh-tools": ">=0.0.1-0"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
   }
 }

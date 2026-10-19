@@ -1,65 +1,182 @@
 # dsh-mcp-servers-panel
 
-DSH (DeepSeek Harness) 的 MCP 服务器管理面板插件。
+DSH（DeepSeek Harness）的 MCP 服务器管理面板插件。
 
-在 DSH 设置中提供原生的 **MCP Servers** 管理选项卡，方便用户直观地新增、查看、修改、删除和启停 MCP 服务器，并自动将发现的 MCP 工具注册到 DSH 工具运行时供模型与会话直接调用。
+自 0.2.0 起，面板的定位是 **管理平面（management plane）**：它只负责把官方 `@deepseek-ai/dsh-mcp-client` 的 Loader 行写入当前 profile 的 `cordis.patch.yml`、切换这些行的启停状态，并从 Loader 读取实时状态。
+
+MCP 的 stdio / Streamable HTTP 传输、进程启动、协议握手、自动重连、工具注册、资源与清理，全部由官方客户端负责。面板不再自行启动 MCP 进程，也不再实现或转发 MCP JSON-RPC。
+
+---
+
+## 0.2.0 的职责边界
+
+| 能力 | 本面板 | 官方 MCP 客户端 |
+| --- | --- | --- |
+| 配置存储 | 写入活动 profile 的 `cordis.patch.yml` | 读取并校验 Loader 行 |
+| 启停 | 切换面板行的 `disabled` | 根据 Loader 状态启动或停止连接 |
+| 传输与进程 | 不参与 | stdio / Streamable HTTP、进程生命周期 |
+| 协议 | 不参与 | 握手、工具发现、工具调用、资源读取 |
+| 工具注册 | 只读展示 | 以 `mcp__<serverName>__<tool>` 注册到 DSH 工具运行时 |
+| 重连与清理 | 不参与 | 重连策略、资源提供者、连接与进程清理 |
+
+面板是这些官方条目的管理器，而不是 MCP 客户端本身。工具名称、服务器指令、重连行为等以官方客户端为准。
+
+---
+
+## 存储模型
+
+### 活动 profile
+
+面板通过 DSH 启动器注入的 `profileContext` 服务定位活动 profile。该服务包含 `name`、`dir`、`patchPath` 等位置信息；面板只读写该 profile 的 `cordis.patch.yml`（即 `patchPath`）。
+
+0.2.0 只管理当前活动 profile：
+
+- 用户级 / 工作区级的作用域概念已移除，界面没有作用域选择器。
+- 旧版的 `~/.dsh/mcp.json` 与 `<workspace>/.dsh/mcp.json` 不再被读取或写入。
+- 如需沿用旧配置，可在编辑器的 JSON 模式中粘贴原有服务器配置批量导入。
+
+### 面板行
+
+面板把每个服务器写成 profile patch 中的一条普通 Loader insert 行：
+
+- 行 id：`dsh-mcp-panel-<serverName>`
+- 模块名：`@deepseek-ai/dsh-mcp-client`
+- 服务器配置：该行的 `config`
+- 开关：服务器关闭时写入行级 `disabled: true`，启用时移除该字段
+
+示例（面板只为非默认值写字段；未写出的字段由官方客户端使用默认值）：
+
+```yaml
+- insert:
+    - id: dsh-mcp-panel-fast-context
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: fast-context
+        transport: stdio
+        command: npx
+        args:
+          - -y
+          - '@sammysnake/fast-context-mcp'
+
+    - id: dsh-mcp-panel-docs
+      name: "@deepseek-ai/dsh-mcp-client"
+      # 服务器关闭时由面板写入
+      disabled: true
+      config:
+        serverName: docs
+        transport: streamable-http
+        url: http://127.0.0.1:3000/mcp
+```
+
+`env`、`cwd`、`headers`、`toolCallTimeoutMs`、`reconnect`、`failOnStartupError`、`maxInstructionBytes` 等字段只在显式设置且不同于默认值时出现；默认值见下表。
+
+面板使用 `yaml` 包的 Document API 读写 patch，只增加、更新或删除 id 以 `dsh-mcp-panel-` 开头的 insert 行；无关条目的注释与 `!!js` 标签会被保留。
+
+### 配置字段
+
+以下字段对应官方客户端的 `Config`；`disabled` 是 Loader 行字段，不属于 `config`。
+
+| 字段 | 适用传输 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `serverName` | 必填 | — | 服务器命名空间，`^[A-Za-z0-9_-]{1,32}$`，加载作用域内唯一 |
+| `transport` | 必填 | — | `stdio` 或 `streamable-http` |
+| `command` | stdio | 必填 | 可执行文件 |
+| `args` | stdio | `[]` | 参数数组 |
+| `env` | stdio | `{}` | 在清理凭据类变量和 `DSH_*` 变量后的环境之上合并 |
+| `cwd` | stdio | `''` | 工作目录 |
+| `url` | streamable-http | 必填 | MCP 端点 URL |
+| `headers` | streamable-http | `{}` | 额外请求头 |
+| `toolCallTimeoutMs` | 两者 | `60000` | 单次 `tools/call` 或资源请求的超时 |
+| `reconnect.enabled` | 两者 | `true` | 连接丢失后自动重连 |
+| `reconnect.initialDelayMs` | 两者 | `500` | 首次重连延迟；连续失败后逐次翻倍 |
+| `reconnect.maxDelayMs` | 两者 | `30000` | 退避上限，也是重置尝试预算的连接稳定时长 |
+| `reconnect.maxAttempts` | 两者 | `10` | 单次中断的连续失败上限；耗尽后移除工具并停止重连，直到重载配置或重启 |
+| `failOnStartupError` | 两者 | `false` | 初始连接或工具同步失败时，是否让插件激活失败 |
+| `maxInstructionBytes` | 两者 | `32768` | 服务器指令的 UTF-8 字节上限（含归属行），超限拒绝连接 |
+| `disabled` | 两者 | `false` | Loader 行字段；关闭服务器时由面板写入 |
+
+### 来源与只读行
+
+列表中的每一行来自以下三种来源之一：
+
+- **面板**：id 以 `dsh-mcp-panel-` 开头、由本面板管理的行。
+- **Magpie**：插件清单条目 id（Loader 的 `options.id`）以 `magpie-mcp-` 开头的 `@deepseek-ai/dsh-mcp-client` 行。
+- **插件清单**：其他来源写入的 `@deepseek-ai/dsh-mcp-client` 行。
+
+面板行可以新增、编辑、删除和启停。Magpie 与插件清单行只读：不能编辑或删除，只能通过开关启停；启停由 DSH 插件管理器（`pluginManager.setPluginEnabled`）处理。若插件管理器不可用或该行不可控，开关会被禁用并显示原因。
+
+面板不会修改或删除其他来源的行。删除面板行时，只移除对应的一条 insert 行。
+
+### 重名规则
+
+`serverName` 是官方客户端的命名空间，在加载作用域内必须唯一；面板行属于 profile 级全局条目，因此面板按全局唯一校验。官方客户端在加载时拒绝重复项（后加载的一条会报错并失败）。
+
+面板在保存前会同时检查自己的行和 Loader 中所有（含已禁用）的 `@deepseek-ai/dsh-mcp-client` 行；发现重名时拒绝写入并给出错误。非面板行不能被同名的面板配置接管；停用只写入行级 `disabled`，不会释放 `serverName`，要释放名字需移除对应行。
+
+需要改名时，在 JSON 模式中给服务器一个不同的名字，面板会以 `replaceName` 提交替换。新名称必须唯一：把 A 改名为已存在的另一条面板服务器 B 会被拒绝，不会覆盖 B。
+
+---
+
+## 生效路径
+
+面板的所有写操作在管理器内串行执行。
+
+- **HMR 可用时**：在 `hmr.runExclusive` 事务中先原子写入 patch 文件，再调用 `hmr.reconcileProfile(requiredIds)` 让 Loader 立即应用。新增、编辑、启用传入该面板行的 id；禁用、删除传入空列表。若 reconcile 失败，面板恢复写入前的文件内容并再次 reconcile，然后向界面抛出错误，避免留下半应用状态。
+- **没有 HMR 时**：只写入 patch 文件，并返回 `application: 'restart-required'`；界面显示警告横幅，需要重启 DSH 才能加载新配置。
+- 保存、删除、启停的结果都会带上 `application`：`applied` 表示无需重启（可能已经生效），`restart-required` 表示需要重启。插件清单条目的启停若被更高优先级的配置覆盖，仍返回 `applied`，但会附带提示，实际状态可能未改变。
+
+常规 DSH Desktop / Web 的 profile 启动会提供 HMR；headless、SDK、ACP 等组合默认禁用 HMR，在配置中关闭 HMR 时同样会退回到重启生效。
+
+---
+
+## profileContext 要求
+
+面板依赖 DSH 启动器提供的 `profileContext`：
+
+- 存在时：界面在副标题与每行徽标中显示当前 Profile 名称，可以读写该 profile 的 patch。
+- 不存在时：面板会显示缺少 profile 的提示，`canManage` 为 false，保存、删除等写入 profile patch 的操作不可用；插件清单行的启停仍取决于 DSH 是否提供插件管理器。面板不会回退到用户级或工作区级配置文件。
+
+`profileContext` 由 DSH 宿主提供，不是插件配置项。没有 profile 上下文说明当前启动方式不提供可管理的 profile，此时面板只能展示提示，不能写入 profile patch。
 
 ---
 
 ## 功能特性
 
-1. **设置面板无缝集成**：
+1. **设置页无缝集成**
    - 启动后自动在设置左侧菜单添加「MCP 服务器」选项卡。
-   - 遵循 DSH 官方原生 UI 规范设计，纯 SVG 矢量图标，**零 Emoji**；界面文案为中文。
+   - 遵循 DSH 原生界面规范，纯 SVG 图标，无 Emoji，界面文案为中文。
+   - 头部显示标题与副标题（副标题带 Profile 名称或缺少 profile 的提示）、来源筛选、新增按钮和刷新按钮；按钮顺序保持 0.1.7 的「筛选 → 新增 → 刷新」。
 
-2. **已安装 MCP 服务列表**：
-   - 清晰展示当前已配置的 MCP 服务器名称、作用域徽标（全局 (用户) / 工作区）、传输协议徽标、运行状态指示灯（在线绿色 / 禁用灰色 / 连接中与错误红色）。
-   - 头部提供作用域筛选下拉、「新增 MCP」、「刷新」快捷操作。
-   - 每个服务器支持点击展开查看已发现的工具列表与描述（如 `13 个工具可用`）。
-   - 支持独立开关启停（实时加载/释放工具）及删除确认。
+2. **服务器列表**
+   - 显示服务器名称、状态点、Profile 徽标、来源徽标（面板 / Magpie / 插件清单）和传输徽标（stdio / streamable-http）。
+   - 头部可按来源筛选：全部来源 / 面板 / Magpie / 插件清单。
+   - 面板行按 patch 文件顺序排列在前，其他来源行按名称排列在后。
+   - 状态副文本按以下顺序取第一个匹配项：已禁用；加载失败；正在加载...；已启用，{n} 个工具可用；已启用，暂无可用工具。
+   - 有警告时显示提示标记。
 
-3. **新建与编辑 MCP 服务**：
-   - 提供「表单」与「JSON」双模式切换编辑（新建默认 JSON 模式，编辑默认表单模式）：
-     - **表单模式**：直观输入服务名称（`^[A-Za-z0-9_-]{1,64}$`）、传输协议（stdio / streamable-http）、可执行命令、参数列表、环境变量键值对、端点 URL 与请求头。编辑已有服务时名称与作用域不可改。
-     - **JSON 模式**：支持直接粘贴或编辑完整配置（智能兼容单个配置对象、`servers` / `mcpServers` 包装对象、顶层数组以及 Cursor / Claude Code 常见格式），可一次粘贴多个服务器**批量导入**；JSON 模式下可改名（等价于删除旧名 + 新建）；`cwd`、`toolCallTimeoutMs`（默认 60000）等进阶字段仅 JSON 模式可设。
-   - 重名保护：同一作用域内重名拒绝保存；同名可跨作用域共存（用户 / 工作区互相隔离）。
-   - 支持自由切换「作用域」：
-     - **用户（User）**：全局生效，保存于 `~/.dsh/mcp.json`（仅当该文件不存在且 `~/.dsh/mcp-servers.json` 存在时，才兼容读取后者）。
-     - **项目（Workspace）**：仅当前项目生效，保存于 `<workspace>/.dsh/mcp.json`。
-   - 注意：保存时统一重写为规范格式 `{version: 1, servers: [...]}`，会改变原有文件结构（读取则兼容 5 种常见格式）。
+3. **展开详情**
+   - 展开后可查看错误信息、警告、实际生效的配置（transport、command、args、cwd、url、toolCallTimeoutMs、reconnect 等）、对应的 patch 行 id、profile 的 patch 路径，以及官方客户端已发现的工具（名称与描述）。
 
-4. **对话内直接调用**：
-   - 自动维护 MCP 进程生命周期（stdio 管道或 HTTP 通信）。
-   - 自动完成 MCP 2024-11-05 协议握手（`initialize` -> `notifications/initialized` -> `tools/list`）。
-   - 自动将发现的工具以 `mcp__<serverName>__<toolName>` 注册至 `ctx.tools`。名称超过 64 字符或含非法字符时，按当前 DSH 规则截断并附加哈希。
-   - 传输协议支持 `stdio` 与 `streamable-http`（`sse` / `http` 别名自动归一为 streamable-http；缺省时按有无 `url` 推断）。
+4. **新增与编辑**
+   - 提供「表单」与「JSON」双模式，编辑时目标是当前 profile 的 patch；编辑器顶部显示当前 Profile，并在其下方以只读方式显示目标 patch 路径。
+   - **表单模式**：输入名称（编辑时禁用）、传输方式、stdio 的命令 / 参数 / 环境变量，或 streamable-http 的 URL / 请求头。
+   - **JSON 模式**：兼容完整 `{mcpServers: {...}}`、`{servers: {...}}`、顶层数组、裸映射，以及单个官方 `@deepseek-ai/dsh-mcp-client` 配置对象，可一次粘贴批量导入；未知字段会被忽略；`enabled: false` 映射为一条禁用行。
+   - `cwd`、`toolCallTimeoutMs`、`reconnect`、`failOnStartupError`、`maxInstructionBytes` 等进阶字段在 JSON 模式中编辑。
+   - 编辑时保留服务器名称，除非 JSON 中指定了不同的名称；后者以 `replaceName` 提交，且新名称必须唯一（不能覆盖另一条面板服务器）。
 
-5. **跨平台与 Windows 原生兼容**：
-   - **Windows stdio 增强**：针对 Windows 上 `spawn` 无法直接运行无扩展名脚本或 `.cmd`/`.bat`（例如 `npx`、`uvx`）的问题，自动通过 `PATHEXT` 探测可执行目标并封装 `cmd.exe /d /s /c` 转义执行，彻底解决 `ENOENT`。
-   - **环境 PATH 智能探测补齐**：自动嗅探并补充常见全局环境路径（Node.js 安装目录、`npm` 全局目录、`pnpm`、`yarn`、`scoop`、`mise`、`nvm`、`fnm`、`volta`、`homebrew`、`cargo`、`.local/bin` 等），避免从桌面图标启动 DSH 缺失 login-shell PATH 的问题。
+5. **启停与删除**
+   - 面板行可直接启停，写入或移除该行的 `disabled`。
+   - 非面板行只读，但可以在可控时通过开关交由 DSH 插件管理器启停。
+   - 删除面板行只移除对应的 insert 行，不影响其他来源的行。
 
-6. **诊断排查与可视化**：
-   - 点击展开服务器卡片，不仅可查看可用工具，还能直接展开查阅底层启动配置（传输类型、启动命令、参数、工作目录、URL）。
-   - 连接异常时直接展示错误详情提示框。streamable-http 握手有 8 秒超时保护，避免卡在「正在连接」；stdio 握手与工具调用使用 `toolCallTimeoutMs`（默认 60 秒）。
+6. **重启提示**
+   - 当 DSH 返回 `restart-required` 时，界面显示警告横幅，并保留到下一次刷新。
 
-7. **与 DSH 插件清单中的 MCP 条目共存（0.1.5+）**：
-   - DSH 自带 MCP 客户端插件 `@deepseek-ai/dsh-mcp-client`，但 profile 的插件清单（`cordis.patch.yml`）里的具体条目不一定由 DSH 写入。例如 Magpie 会写入 id 形如 `magpie-mcp-<name>` 的条目。它们不是「DSH 原生」，而是**第三方写入插件清单的 MCP 条目**。
-   - 这些条目会独立启动进程，并在**任何面板开关状态下**把工具注入上下文。面板现在会识别它们，并在列表中按来源标记：
-     - **面板**：由本面板管理（配置在 `mcp.json`）。
-     - **Magpie**：插件清单中 id 为 `magpie-mcp-*` 的条目。
-     - **插件清单**：插件清单中其他来源的条目。
-   - 同名条目的处理规则：
-     - **列表以面板条目为主**：只要同名服务器在面板配置里存在，列表就显示「面板」徽标，并使用面板配置里的命令/参数/URL、作用域和开关状态。同名的插件清单条目不再顶替这一行，而是在展开详情的「同名插件清单条目」里显示其 id、来源和启停状态。
-     - **同名且连接参数一致**：面板不再重复启动进程，直接复用插件清单条目；面板的启用/禁用会通过 DSH 插件管理器同步到该条目的 `disabled` 值，因此「面板里禁用」会真正让工具从上下文中消失。
-     - **同名但参数不同**：以面板配置为准。保存面板配置或切换开关后，面板会停用同名插件清单条目并自行托管该服务器。
-     - **只在插件清单中存在**（例如 `magpie-image`）：也会出现在列表中，可直接用开关启停；这类条目只读，编辑/删除需到 DSH 插件设置中操作。
-     - **删除面板配置**：只删除 `mcp.json` 里的配置，同名插件清单条目保留原状态并继续运行（列表会以「Magpie」或「插件清单」显示）。要停用它，请用列表开关。
-     - 无法控制（`pluginManager` 不可用或条目只读）时，列表会显示明确错误，而不是静默注入工具。
-
-8. **安全模型**：
-   - 所有管理接口仅允许本地回环访问（127.0.0.1 / ::1，否则 403）；HTTP 请求体上限 256KB；响应 `Cache-Control: no-store`。
-   - 前端与宿主双通道通信：优先 loopback RPC，失败时回退 loopback HTTP（`list` / `save` / `delete` / `toggle` / `reload`）。
-   - 注意：由于只校验回环地址，**本机上任何进程都可以调用管理接口**——不要在不可信的多用户环境暴露。
+7. **安全**
+   - 管理接口只接受回环地址（`127.0.0.0/8`、`::1`、IPv4 映射的 `::ffff:127.x`），其他来源拒绝。
+   - HTTP 请求体上限为 256 KB，响应使用 `Cache-Control: no-store`。
+   - 前端通过 loopback RPC 调用管理接口；宿主也在同一前缀提供 loopback HTTP 端点（`list` / `save` / `delete` / `toggle` / `reload`）。
+   - HTTP 入口仍受 DSH Web 服务自身的访问控制（未携带会话凭据的请求会被拒绝）；仍不要在不可信的多用户环境暴露管理接口。
 
 ---
 
@@ -84,15 +201,40 @@ dsh plugin --profile <name> add /绝对路径/dsh-mcp-servers-panel
 ```
 
 > [!IMPORTANT]
-> DSH 在进程**启动时**组合插件。先启动再安装时，必须完全退出并重新打开 DSH（不是刷新页面）。
+> DSH 在进程启动时组合插件。先启动再安装插件时，必须完全退出并重新打开 DSH（不是刷新页面）。
 
 启动 DSH Desktop 后，进入「设置」即可在侧边栏看到「MCP 服务器」面板。
 
-要求 Node.js >= 20。
+要求 Node.js >= 20。运行时依赖 `yaml@^2.9.1`。
 
 ---
 
-## 修复记录
+## 0.2.0 的行为变化
+
+- 面板由「自己启动并托管 MCP 进程」改为「管理 profile patch 中的官方客户端行」。
+- 移除自建的 stdio / HTTP 传输、MCP 握手、工具注册与注销、重连和进程树清理。
+- 移除 Windows `spawn` 包装与 PATH 探测补全；stdio 命令的解析和启动由官方客户端及其 MCP SDK 负责。
+- 移除用户 / 工作区作用域，只管理当前活动 profile。
+- 不再读取或写入旧版 `mcp.json`。
+- 新增对 profile patch 的 YAML Document 读写、对非面板行的只读展示、重名校验，以及重启提示横幅。
+
+---
+
+## 修复与变更记录
+
+### 0.2.0
+
+- **重构为管理平面**：面板不再启动 MCP 进程、不再实现 MCP 协议，只读写活动 profile 的 `cordis.patch.yml` 并读取 Loader 状态；传输、重连、工具注册、资源和清理交给官方 `@deepseek-ai/dsh-mcp-client`。
+- **新增 `patch-store.js`**：通过 `yaml` 的 Document API 维护 id 为 `dsh-mcp-panel-<serverName>` 的 insert 行，保留无关条目的注释和 `!!js` 标签。
+- **新的存储格式**：每个服务器对应一条官方客户端 Loader 行，配置字段为 `serverName`、`transport`、`command`、`args`、`env`、`cwd`、`url`、`headers`、`toolCallTimeoutMs`、`reconnect`、`failOnStartupError`、`maxInstructionBytes`；关闭时写入行级 `disabled: true`。
+- **新增 profile 依赖**：通过 `profileContext` 定位活动 profile 的 patch；缺失时显示提示并禁用管理操作。界面新增 Profile 徽标。
+- **新增 HMR 生效路径**：在 `hmr.runExclusive` 事务中写入并 `reconcileProfile`，失败时恢复旧文本；没有 HMR 时返回 `restart-required` 并显示警告横幅。
+- **新增非面板行处理**：识别 Magpie（`magpie-mcp-*`）与其他插件清单写入的 `@deepseek-ai/dsh-mcp-client` 行，只读展示，启停交由 `pluginManager.setPluginEnabled`。
+- **新增重名校验**：保存前同时检查面板行和所有 `@deepseek-ai/dsh-mcp-client` 行（含已禁用行）；`serverName` 规则为 `^[A-Za-z0-9_-]{1,32}$`；重命名到另一条面板服务器会拒绝，避免覆盖。
+- **移除**：自建进程与传输、MCP JSON-RPC 握手与工具桥接、工具注册与注销、自建重连和进程树清理、Windows spawn 包装与 PATH 探测、用户 / 工作区作用域、旧版 `mcp.json` 读写。
+- **测试更新**：`npm test` 覆盖 patch 文档读写、管理器操作与重名、Loader 行来源与外来行、安全校验，以及 `client.js` 的静态检查。
+
+> 以下 0.1.x 条目是历史版本的行为记录；其中进程托管、用户 / 工作区作用域、`mcp.json` 存储等能力已在 0.2.0 移除。
 
 ### 0.1.7
 
@@ -104,7 +246,7 @@ dsh plugin --profile <name> add /绝对路径/dsh-mcp-servers-panel
 
 - **更正术语**：不再把插件清单中的 MCP 条目称为「DSH 原生」。`@deepseek-ai/dsh-mcp-client` 是 DSH 自带插件，但具体条目可能由 Magpie 等第三方工具写入。列表现在按来源显示「面板」/「Magpie」/「插件清单」，展开详情会显示清单条目 id。
 - **修正删除语义**：删除面板配置只移除 `mcp.json` 条目，不再顺带停用同名插件清单条目。删除后列表会显示该插件清单条目（如 Magpie）及其真实启停状态，需要停用时用手动开关。删除面板配置时若有同名插件清单条目，确认框会提示这一点。
-- 新增/更新回归测试：来源识别（`magpie-mcp-*` → Magpie）、删除面板配置后插件条目保持启用、同名不同参数时面板接管。
+- 新增/更新回归测试：来源识别（`magpie-mcp-*` 识别为 Magpie）、删除面板配置后插件条目保持启用、同名不同参数时面板接管。
 
 ### 0.1.5
 
@@ -116,7 +258,7 @@ dsh plugin --profile <name> add /绝对路径/dsh-mcp-servers-panel
 - **修复禁用 MCP 后工具仍被注入上下文**：
   - 刚启动/切换工作区时并发触发的多次 reconcile 不再可能用旧配置把已禁用服务器重新拉起；
   - 工具注册前会再次检查 runner 是否已被停止，停止时同步注销全部工具；
-  - 自动接管插件清单中的同名 `dsh-mcp-client` 条目（见功能特性 7），面板禁用会同时禁用该条目，工具因此真正从上下文中移除。
+  - 自动接管插件清单中的同名 `dsh-mcp-client` 条目，面板禁用会同时禁用该条目，工具因此真正从上下文中移除。
 - 新增 `native-mcp.js`（插件清单 MCP 条目桥接）与两组回归测试：`test/mcp-lifecycle.test.js` 覆盖关闭/竞态/进程回收，`test/native-mcp.test.js` 覆盖清单条目接管与启停同步。
 
 ---
@@ -126,11 +268,12 @@ dsh plugin --profile <name> add /绝对路径/dsh-mcp-servers-panel
 ```
 dsh-mcp-servers-panel/
 ├── cordis.patch.yml   # Cordis 自挂载补丁
-├── package.json       # 插件包描述及平台声明
-├── index.js           # 宿主进程端（配置读写、MCP 进程与生命周期、工具注册、RPC 通信）
-├── native-mcp.js      # 宿主进程端（识别并启停插件清单中的 @deepseek-ai/dsh-mcp-client 条目）
-├── client.js          # 前端渲染端（设置页 UI、列表展示、表单/JSON 编辑器、配置弹窗）
-├── test/              # 单元测试（生命周期、关闭竞态、插件清单条目接管、参数解析、安全校验、Windows 调度）
+├── package.json       # 包描述、依赖与平台声明
+├── index.js           # 宿主进程端（profile patch 管理、McpManager、RPC/HTTP）
+├── native-mcp.js      # 宿主进程端（Loader 行读取、来源识别、非面板行启停）
+├── patch-store.js     # 宿主进程端（yaml Document 读写与 insert 行增删改）
+├── client.js          # 前端渲染端（设置页 UI、列表、表单/JSON 编辑器）
+├── test/              # 单元测试（patch、manager、native-mcp、security、client 静态检查）
 ├── README.md          # 插件说明文档
 └── LICENSE            # MIT 开源许可证
 ```
@@ -139,9 +282,31 @@ dsh-mcp-servers-panel/
 
 ## 测试
 
+从插件目录运行：
+
 ```sh
+cd dsh-mcp-servers-panel
 npm test
 ```
+
+测试覆盖：
+
+- patch 文档的读取、插入、更新与删除，以及无关条目的注释和 `!!js` 标签保留；
+- 管理器的新增、编辑、启停、删除、重名拒绝，以及写失败时的恢复；
+- Loader 行的来源识别、非面板行只读与启停、官方客户端行重复名称；
+- 回环访问等安全校验；
+- `client.js` 的静态检查：语法、旧作用域标识已移除、新的 API 字段存在。
+
+---
+
+## 已知限制
+
+- 面板需要 `profileContext`；没有该上下文时只能显示提示，不能管理配置。
+- 没有 HMR 的宿主中，修改需要重启 DSH 才能生效；面板会显示重启提示。
+- 面板只管理当前活动 profile，不修改其他 profile，也不读取旧版 `mcp.json`。
+- 非面板行只能启停，不能编辑或删除；这些条目应在写入它们的工具或 DSH 插件设置中维护。
+- `serverName` 必须在面板管理的 profile 内唯一（`^[A-Za-z0-9_-]{1,32}$`）；官方客户端会拒绝重复项。
+- 面板不包装命令、不探测或补全 PATH；stdio 启动失败由官方客户端报告，面板只展示 Loader 状态与错误。
 
 ---
 

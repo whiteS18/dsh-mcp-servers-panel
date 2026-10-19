@@ -1,246 +1,241 @@
 /**
- * MCP plugin-manifest bridge.
+ * Read-only view of DSH's official MCP client entries.
  *
- * DSH bundles the MCP client plugin `@deepseek-ai/dsh-mcp-client`. A profile
- * can load several instances of that plugin from its plugin manifest (the
- * "profile patch"). Third-party tools also write such entries: Magpie writes
- * entries with patch ids like `magpie-mcp-<serverName>`.
- *
- * Every plugin-manifest entry runs its own server process and registers
- * `mcp__<serverName>__<tool>` tools directly on the host, independently of
- * this panel. Real installations can therefore end up with the same MCP
- * server configured twice: once in this panel's mcp.json and once as a plugin
- * entry in the manifest.
- *
- * These helpers let the panel discover those plugin entries, present them in
- * the same list and control them through the DSH plugin manager, so an MCP
- * server disabled in the panel really stops being injected into the model
- * context.
+ * The panel does not own these plugin instances. It reads the Loader's live
+ * `@deepseek-ai/dsh-mcp-client` rows, the plugin manager's addressability
+ * metadata, and the tool registry, so the UI can show status, tools and
+ * source. Rows written by other tools (for example Magpie) stay read-only and
+ * are toggled through the official plugin manager.
  */
 
+import { PANEL_ENTRY_PREFIX } from './patch-store.js'
+
 export const NATIVE_MCP_PLUGIN_NAME = '@deepseek-ai/dsh-mcp-client'
-const DEFAULT_TOOL_CALL_TIMEOUT_MS = 60000
+export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 60000
+
 const FIBER_PHASES = ['pending', 'loading', 'active', 'failed', null, 'unloading']
 
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/** Read live native MCP plugin entries straight from the Cordis loader. */
-export function listNativeMcpServers(ctx) {
-  const servers = []
-  if (!ctx || typeof ctx.get !== 'function') return servers
+function safeGet(ctx, name) {
+  try {
+    return ctx?.get?.(name)
+  } catch {
+    return undefined
+  }
+}
+
+/** The official plugin manager service, when this host provides it. */
+export function getPluginManager(ctx) {
+  const manager = safeGet(ctx, 'pluginManager')
+  return manager && typeof manager.setPluginEnabled === 'function' ? manager : undefined
+}
+
+function stripIncludePrefix(id) {
+  return String(id || '').replace(/^include:/, '')
+}
+
+function fiberPhase(entry) {
+  const state = entry?.fiber?.state
+  return typeof state === 'number' ? FIBER_PHASES[state] ?? null : null
+}
+
+function fiberError(entry) {
+  // The fiber context is a Cordis service proxy: reading an uninjected property
+  // from it throws. Only the fiber's own error slot, when this DSH build
+  // exposes one, is safe to inspect.
+  try {
+    const candidate = entry?.fiber?.error
+    if (candidate instanceof Error) return candidate.message
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim()
+  } catch {}
+  return ''
+}
+
+/** Every live loader entry for the official MCP client. */
+export function listMcpClientEntries(ctx) {
   let loader
   try {
-    loader = ctx.get('loader')
+    loader = ctx?.get?.('loader') ?? ctx?.loader
   } catch {
-    return servers
+    return []
   }
-  if (!loader || typeof loader.entries !== 'function') return servers
-  let entries = []
+  if (!loader || typeof loader.entries !== 'function') return []
+  let raw
   try {
-    entries = [...loader.entries()]
+    raw = [...loader.entries()]
   } catch {
-    return servers
+    return []
   }
-  for (const entry of entries) {
-    const options = entry?.options
-    if (!options || options.name !== NATIVE_MCP_PLUGIN_NAME) continue
-    const config = options.config
-    if (!isRecord(config)) continue
-    const serverName = String(config.serverName || '').trim()
-    if (!serverName) continue
-    const transport = config.transport === 'streamable-http' ? 'streamable-http' : 'stdio'
-    const phase = typeof entry.fiber?.state === 'number' ? FIBER_PHASES[entry.fiber.state] ?? null : null
-    servers.push({
-      entryId: entry.id,
-      serverName,
-      transport,
-      command: String(config.command || ''),
-      args: Array.isArray(config.args) ? config.args.map(String) : [],
-      env: isRecord(config.env) ? { ...config.env } : {},
-      cwd: typeof config.cwd === 'string' ? config.cwd : '',
-      url: String(config.url || ''),
-      headers: isRecord(config.headers) ? { ...config.headers } : {},
-      toolCallTimeoutMs: Number(config.toolCallTimeoutMs) || DEFAULT_TOOL_CALL_TIMEOUT_MS,
+  const entries = []
+  for (const entry of raw) {
+    if (entry?.options?.name !== NATIVE_MCP_PLUGIN_NAME) continue
+    const config = isRecord(entry.options.config) ? entry.options.config : {}
+    entries.push({
+      entryId: String(entry.id || ''),
+      loaderEntryId: String(entry.id || ''),
+      patchId: String(entry.options.id || stripIncludePrefix(entry.id)),
+      serverName: String(config.serverName || '').trim(),
+      config,
+      disabled: entry.disabled === true,
       enabled: entry.disabled !== true,
-      fiberPhase: phase,
-      patchId: '',
-      readOnlyReason: '',
-      warnings: [],
+      fiberPhase: fiberPhase(entry),
+      fiberState: typeof entry.fiber?.state === 'number' ? entry.fiber.state : null,
+      fiberError: fiberError(entry),
+      options: entry.options,
     })
   }
-  return servers
+  return entries
 }
 
-/** Same snapshot plus plugin-manager addressability (patch id / read-only reason). */
-export async function readNativeMcpServers(ctx) {
-  const servers = listNativeMcpServers(ctx)
-  if (servers.length === 0) return servers
-  let pluginManager
+/** Plugin-manager rows keyed by loader entry id. */
+export async function readPluginManagerRows(ctx) {
+  const manager = getPluginManager(ctx)
+  if (!manager || typeof manager.listPlugins !== 'function') return new Map()
   try {
-    pluginManager = ctx?.get?.('pluginManager')
-  } catch {}
-  let rows
-  if (pluginManager && typeof pluginManager.listPlugins === 'function') {
-    try {
-      rows = await pluginManager.listPlugins()
-    } catch {}
+    const rows = await manager.listPlugins()
+    if (!Array.isArray(rows)) return new Map()
+    return new Map(rows.map((row) => [row?.entryId, row]))
+  } catch {
+    return new Map()
   }
-  if (!Array.isArray(rows)) {
-    for (const server of servers) server.readOnlyReason = server.readOnlyReason || 'unaddressable'
-    return servers
-  }
-  const byId = new Map(rows.map((row) => [row?.entryId, row]))
-  for (const server of servers) {
-    const row = byId.get(server.entryId)
-    if (!row) {
-      server.readOnlyReason = 'unaddressable'
-      continue
-    }
-    if (typeof row.enabled === 'boolean') server.enabled = row.enabled
-    if (row.fiberPhase !== undefined) server.fiberPhase = row.fiberPhase
-    server.patchId = row.patchId || ''
-    server.readOnlyReason = row.readOnlyReason || ''
-  }
-  return servers
 }
 
-/**
- * Classify one plugin-manifest MCP entry by its manifest id.
- * Magpie writes ids shaped like `magpie-mcp-<serverName>`; other writers use
- * their own ids. The origin label is shown in the panel so users can tell a
- * third-party entry apart from a panel-managed server.
- */
-export function nativeEntryOrigin(native) {
-  const patchId = String(native?.patchId || '')
-  if (/^magpie-mcp-/i.test(patchId)) {
-    return { origin: 'magpie', originLabel: 'Magpie', patchEntryId: patchId }
+/** One inventory snapshot: live entries plus plugin-manager rows. */
+export async function readMcpInventory(ctx) {
+  const entries = listMcpClientEntries(ctx)
+  const rows = await readPluginManagerRows(ctx)
+  return {
+    entries,
+    rows,
+    hasPluginManager: Boolean(getPluginManager(ctx)),
   }
-  return { origin: 'plugin-manifest', originLabel: '插件清单', patchEntryId: patchId }
-}
-
-function nativeCommandIdentity(command) {
-  return String(command || '').trim().replace(/\\/g, '/').toLowerCase()
-}
-
-/** Whether a native entry describes the same server as one panel config entry. */
-export function nativeMatchesServer(native, server) {
-  if (!isRecord(native) || !isRecord(server)) return false
-  if (native.serverName !== server.name) return false
-  if ((native.transport || 'stdio') !== (server.transport || 'stdio')) return false
-  if (native.transport === 'stdio') {
-    if (nativeCommandIdentity(native.command) !== nativeCommandIdentity(server.command)) return false
-    return JSON.stringify((native.args || []).map(String)) === JSON.stringify((server.args || []).map(String))
-  }
-  return String(native.url || '').trim() === String(server.url || '').trim()
 }
 
 /** Tools currently visible in the host registry under one MCP server namespace. */
 export function registeredMcpTools(ctx, serverName) {
   if (!serverName) return []
+  let tools
+  try {
+    tools = ctx?.get?.('tools') ?? ctx?.tools
+  } catch {
+    return []
+  }
   let view
   try {
-    view = ctx?.tools?.view?.()
+    view = tools?.view?.()
   } catch {
     return []
   }
   const visible = view?.visible
   if (!visible || typeof visible.entries !== 'function') return []
   const prefix = 'mcp__' + serverName + '__'
-  const tools = []
+  const list = []
   for (const [toolName, definition] of visible.entries()) {
     if (typeof toolName !== 'string' || !toolName.startsWith(prefix)) continue
-    tools.push({
+    list.push({
       name: toolName,
       rawName: toolName.slice(prefix.length),
       description: String(definition?.description || ''),
       inputSchema: definition?.parameters || { type: 'object' },
     })
   }
-  return tools
+  return list
 }
 
-function nativeLifecycleStatus(native) {
-  if (!native) return 'disabled'
-  if (native.enabled === false) return 'disabled'
-  switch (native.fiberPhase) {
-    case 'active':
-      return 'connected'
-    case 'loading':
-    case 'pending':
-    case 'unloading':
-      return 'connecting'
-    case 'failed':
-      return 'error'
-    default:
-      return 'connecting'
+/** Classify a plugin-manifest MCP id by its writer. */
+export function nativeEntryOrigin(patchEntryId, entryId = '') {
+  const id = String(patchEntryId || entryId || '')
+  if (/^magpie-mcp-/i.test(id)) {
+    return { origin: 'magpie', originLabel: 'Magpie', patchEntryId: id }
   }
+  return { origin: 'plugin-manifest', originLabel: '插件清单', patchEntryId: id }
 }
 
-/** Ask the DSH plugin manager to enable/disable one native MCP plugin row. */
-export async function setNativeServerEnabled(ctx, native, enabled) {
-  let pluginManager
-  try {
-    pluginManager = ctx?.get?.('pluginManager')
-  } catch {}
-  if (!pluginManager || typeof pluginManager.setPluginEnabled !== 'function') {
-    throw new Error('当前 DSH 运行环境没有提供插件管理服务 (pluginManager)，无法启停插件清单中的 MCP 条目')
-  }
-  if (native.readOnlyReason) {
-    throw new Error('该插件清单条目不可由面板修改（' + native.readOnlyReason + '）')
-  }
-  if (!native.entryId) throw new Error('未找到插件清单条目的 ID')
-  return await pluginManager.setPluginEnabled(native.entryId, Boolean(enabled))
+function normalizeStatus(phase, enabled) {
+  if (!enabled) return 'disabled'
+  if (phase === 'active') return 'connected'
+  if (phase === 'failed') return 'error'
+  return 'connecting'
 }
 
-/** Describe one native MCP server for the panel list API. */
-export function describeNativeMcpServer(ctx, native, options = {}) {
-  const enabled = native.enabled !== false
-  const tools = enabled ? registeredMcpTools(ctx, native.serverName) : []
-  const status = nativeLifecycleStatus(native)
-  const controllable = Boolean(options.hasPluginManager) && !native.readOnlyReason
-  const warnings = Array.isArray(native.warnings) ? [...native.warnings] : []
-  const origin = nativeEntryOrigin(native)
+/**
+ * Describe one foreign (non-panel) official MCP client row for the UI.
+ *
+ * @param {object} ctx host context
+ * @param {object} entry live loader entry snapshot from {@link listMcpClientEntries}
+ * @param {object|undefined} row plugin-manager row
+ * @param {{hasPluginManager: boolean}} options
+ */
+export function describeMcpEntry(ctx, entry, row, options = {}) {
+  const config = isRecord(entry.config) ? entry.config : {}
+  const enabled = typeof row?.enabled === 'boolean' ? row.enabled : entry.enabled !== false
+  const phase = row?.fiberPhase !== undefined ? row.fiberPhase : entry.fiberPhase
+  const status = normalizeStatus(phase, enabled)
+  const patchEntryId = String(row?.patchId || entry.patchId || stripIncludePrefix(entry.entryId))
+  const origin = nativeEntryOrigin(patchEntryId, entry.entryId)
+  const readOnlyReason = String(row?.readOnlyReason || '')
+  const controllable = Boolean(options.hasPluginManager) && !readOnlyReason
+  const tools = enabled ? registeredMcpTools(ctx, entry.serverName) : []
+  const warnings = []
+  let error = ''
+  if (status === 'error') error = entry.fiberError || '插件加载失败，请在 DSH 日志中查看原因。'
   if (enabled && !controllable) {
     warnings.push('该 MCP 来自 DSH 插件清单（可能由 Magpie 等第三方工具写入），当前无法从面板关闭；请在 DSH 插件设置中停用对应条目。')
   }
-  let error = null
-  if (status === 'error') error = '插件清单中的 MCP 条目加载失败，请在 DSH 插件设置中查看日志。'
-  else if (options.conflict) error = options.conflict
+  if (!entry.serverName) warnings.push('该插件清单条目缺少 serverName，官方 MCP client 无法注册工具。')
+
+  const transport = config.transport === 'streamable-http' ? 'streamable-http' : 'stdio'
   return {
-    name: native.serverName,
-    scope: options.scope || 'user',
-    workspacePath: options.workspacePath || '',
+    name: entry.serverName || patchEntryId || entry.entryId,
+    entryId: patchEntryId,
+    loaderEntryId: entry.loaderEntryId || entry.entryId,
     source: 'plugin',
     origin: origin.origin,
     originLabel: origin.originLabel,
     patchEntryId: origin.patchEntryId,
-    nativeEntryId: native.entryId,
-    nativePatchId: native.patchId || '',
-    pluginEntry: {
-      entryId: native.entryId,
-      patchEntryId: origin.patchEntryId,
-      origin: origin.origin,
-      originLabel: origin.originLabel,
-      enabled,
-      readOnlyReason: native.readOnlyReason || '',
-    },
     readonly: true,
     controllable,
     enabled,
-    transport: native.transport,
-    command: native.command,
-    args: native.args,
-    env: native.env,
-    cwd: native.cwd,
-    url: native.url,
-    headers: native.headers,
-    toolCallTimeoutMs: native.toolCallTimeoutMs,
+    transport,
+    command: String(config.command || ''),
+    args: Array.isArray(config.args) ? config.args.map(String) : [],
+    env: isRecord(config.env) ? { ...config.env } : {},
+    cwd: typeof config.cwd === 'string' ? config.cwd : '',
+    url: String(config.url || ''),
+    headers: isRecord(config.headers) ? { ...config.headers } : {},
+    toolCallTimeoutMs: Number(config.toolCallTimeoutMs) || DEFAULT_TOOL_CALL_TIMEOUT_MS,
+    reconnect: isRecord(config.reconnect) ? { ...config.reconnect } : undefined,
+    failOnStartupError: config.failOnStartupError === true,
+    maxInstructionBytes: Number(config.maxInstructionBytes) || undefined,
     status,
     error,
     warnings,
     toolCount: tools.length,
     tools,
+    pluginEntry: {
+      entryId: entry.loaderEntryId || entry.entryId,
+      patchEntryId: origin.patchEntryId,
+      origin: origin.origin,
+      originLabel: origin.originLabel,
+      enabled,
+      readOnlyReason,
+    },
+    configEnabled: enabled,
+    runtimeEnabled: entry.disabled !== true,
   }
 }
+
+/** Ask the official plugin manager to enable or disable one manifest row. */
+export async function setNativeServerEnabled(ctx, entryId, enabled) {
+  const manager = getPluginManager(ctx)
+  if (!manager) {
+    throw new Error('当前 DSH 运行环境没有提供插件管理服务 (pluginManager)，无法启停插件清单中的 MCP 条目')
+  }
+  if (!entryId) throw new Error('未找到插件清单条目的 ID')
+  return await manager.setPluginEnabled(entryId, Boolean(enabled))
+}
+
+export { PANEL_ENTRY_PREFIX }

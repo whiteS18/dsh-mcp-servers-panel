@@ -3,11 +3,13 @@
  *
  * Renders the "MCP 服务器" section in DSH Settings:
  * - Tab/Title: "MCP 服务器"
- * - Scope & Workspace Filter Dropdown (原生 DSH 风格):
- *   - "全局 (用户)"
- *   - 工作区列表 (展示 DSH 中已打开/已配置的工作区目录)
- * - Add/Edit MCP Server view with "表单" (Form) and "JSON" tabs
- * - Scope selector: "全局 (用户)" vs 具体工作区 (用户可选择生效的目标工作区)
+ * - Profile-backed management plane: rows are official
+ *   @deepseek-ai/dsh-mcp-client entries in the active profile's
+ *   cordis.patch.yml. The official client owns connection, reconnect,
+ *   tool registration and teardown.
+ * - Add/Edit view with "表单" (Form) and "JSON" tabs; JSON keeps the old
+ *   wrapper acceptance so users can still batch-import.
+ * - No user/segment selector: the active profile is the only target.
  * - Zero emoji, native DSH styling & primitives
  */
 window.__ModuleLoader__.load({
@@ -30,6 +32,9 @@ window.__ModuleLoader__.load({
     const RPC_CHANNEL = '/dsh-mcp-servers-panel'
     const WEB_API_PREFIX = '/api/dsh-mcp-servers-panel'
     const LOCALE_NS = 'settings.dsh-mcp-servers-panel'
+
+    const SERVER_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/
+    const EMPTY_JSON_TEMPLATE = '{\n  "mcpServers": {\n  }\n}'
 
     // Inject native select styles if Menu isn't fully active
     const SELECT_CSS = `
@@ -112,63 +117,86 @@ window.__ModuleLoader__.load({
           h('line', { x1: 18, y1: 6, x2: 6, y2: 18 }),
           h('line', { x1: 6, y1: 6, x2: 18, y2: 18 })
         ),
+      Alert: (props) =>
+        h('svg', { width: props.size || 14, height: props.size || 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' },
+          h('path', { d: 'M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z' }),
+          h('line', { x1: 12, y1: 9, x2: 12, y2: 13 }),
+          h('line', { x1: 12, y1: 17, x2: 12.01, y2: 17 })
+        ),
     }
 
     const dictZh = {
       nav: 'MCP 服务器',
       title: 'MCP 服务器',
-      subtitle: '管理全局与各工作区连接的 MCP 服务器，工具将自动挂载至对话中。',
+      subtitle: '管理当前 Profile 的 MCP 服务器，工具将自动挂载至对话中。',
       addMcp: '新增 MCP',
       refresh: '刷新',
-      toolsEnabled: '{count} 个工具可用',
-      noTools: '未发现可用工具',
-      connecting: '正在连接...',
-      error: '连接错误',
-      errorDetailTitle: '错误详情',
-      configTitle: '启动配置',
+      sourceFilter: '来源',
+      sourceAll: '全部来源',
+      profileLabel: 'Profile',
+      profileBadge: 'Profile: {name}',
+      profileMissing: '未检测到活动 profile',
+      profileMissingDetail: '未检测到活动 profile，MCP 配置无法写入；请通过 profile 启动 DSH 后重试。',
+      manageHint: '当前环境无法管理 profile patch，新增、编辑与删除已禁用。',
+      nativeControlUnavailable: '当前环境不支持通过插件管理器启停外部条目。',
+      restartRequiredTitle: '配置已写入，需要重启 DSH',
+      restartRequiredBody: '当前 profile 未启用 HMR，需要重启 DSH 后配置才会生效。',
+      restartRequiredOverridden: '该条目的启停被更高优先级的配置覆盖，实际状态可能未改变；请检查 DSH 插件设置或更高层配置。',
+      restartRequiredNoProfile: '当前运行环境没有 profileContext，配置未生效。',
+      toolsEnabled: '已启用，{count} 个工具可用',
+      noTools: '已启用，暂无可用工具',
+      connecting: '正在加载...',
+      error: '加载失败',
       disabled: '已禁用',
+      errorDetailTitle: '错误详情',
+      warningTitle: '提示',
+      warningsTitle: '环境提示',
+      warningMarker: '提示',
+      configTitle: '启动配置',
+      toolsTitle: '工具',
+      patchEntryLabel: '补丁条目 ID',
+      entryLabel: '运行时条目 ID',
+      profilePathLabel: 'profile patch 路径',
+      sourcePanel: '面板',
+      sourceMagpie: 'Magpie',
+      sourcePluginEntry: '插件清单',
+      sourcePanelHint: '该服务器由本面板管理，配置保存在当前 profile 的 cordis.patch.yml。',
+      foreignHint: '该服务器来自 {origin}，不是面板配置，面板以只读方式展示。',
+      readonlyPluginHint: '该服务器来自其他来源，面板不能编辑或删除；只有可控制时才能在列表中启停。',
+      toggleDisabledHint: '该服务器不由面板控制，无法在列表中启停。',
       edit: '编辑',
       delete: '删除',
-      confirmDelete: '确定要删除 MCP 服务 "{name}" 吗？',
+      confirmDelete: '确定要删除 MCP 服务 "{name}" 吗？该条目将从当前 profile 的 patch 中移除。',
       newServer: '新建 MCP 服务器',
       editServer: '编辑 MCP 服务器',
-      newServerDesc: '填写新的 MCP 配置，保存后返回列表。',
+      newServerDesc: '填写 MCP 配置，保存后写入当前 profile 的 patch。',
       formTab: '表单',
       jsonTab: 'JSON',
-      scope: '作用域',
-      scopeUser: '全局 (用户)',
-      scopeWorkspacePrefix: '工作区: ',
+      targetPatch: '目标 patch',
+      targetPatchMissing: '未检测到 profile',
       fullConfig: '完整配置',
-      jsonHint: '支持直接粘贴 {"server-name": {...}} 或 {"mcpServers": {"server-name": {...}}}。',
+      jsonHint: '支持粘贴 {"server-name": {...}}、{"mcpServers": {...}}、{"servers": {...}}、数组或单个官方配置对象，可批量导入。',
       serverName: '服务名称',
+      serverNameHint: '仅允许字母、数字、下划线和连字符，长度 1-32。',
       transport: '传输方式',
       command: '执行命令',
       args: '启动参数',
       env: '环境变量',
-      cwd: '工作目录',
       url: '服务端点 URL',
       headers: '请求头',
       save: '保存',
       cancel: '取消',
       saving: '保存中...',
-      emptyList: '当前视图下暂无已配置的 MCP 服务，点击右上角「新增 MCP」添加。',
-      sourcePanel: '面板',
-      sourceMagpie: 'Magpie',
-      sourcePluginEntry: '插件清单',
-      sourcePanelHint: '该服务器由本面板管理，配置保存在 mcp.json。',
-      sourcePanelWithPluginHint: '该服务器由本面板管理；插件清单中的同名条目（{entry}）由面板同步启停。',
-      pluginEntryHint: '该服务器来自 DSH 插件清单（可能由 Magpie 等第三方工具写入），不是面板配置。',
-      pluginEntryLabel: '同名插件清单条目',
-      pluginEntryEnabled: '已启用',
-      pluginEntryDisabled: '已禁用',
-      warningTitle: '提示',
-      readonlyPluginHint: '该服务器来自 DSH 插件清单，面板无法编辑或删除；请在列表中用开关启停，或到 DSH 插件设置中管理。',
-      conflictHint: '面板状态与插件清单中的同名条目不一致，请展开查看提示。',
-      confirmDeletePluginEntry: '删除面板配置「{name}」？插件清单中的同名条目（{entry}）会保留并继续运行。要停用它，请使用列表中的开关。',
+      emptyList: '当前 profile 的 patch 中暂无 MCP 服务，点击右上角「新增 MCP」添加。',
+      noProfileEmpty: '未检测到活动 profile，暂时无法管理 MCP 服务。',
       invalidJson: 'JSON 格式不正确，请检查语法',
       nameRequired: '请输入服务名称',
+      nameInvalid: '服务名称只能包含字母、数字、下划线或连字符，长度 1-32。',
       commandRequired: 'stdio 传输方式必须指定执行命令',
       urlRequired: 'streamable-http 传输方式必须指定 URL',
+      nameUnresolved: '无法确定服务名称，请使用 {"服务名": {...}} 形式，或提供 serverName。',
+      loadFailed: '加载 MCP 服务器失败',
+      actionFailed: '操作失败',
     }
 
     function translate(key, params) {
@@ -211,15 +239,6 @@ window.__ModuleLoader__.load({
     function optionId(value) {
       if (value && typeof value === 'object') return value.id || ''
       return typeof value === 'string' ? value : ''
-    }
-
-    function parseScopeKey(scopeKey) {
-      const key = optionId(scopeKey)
-      if (key.startsWith('ws:')) {
-        const workspacePath = key.slice(3)
-        if (workspacePath) return { scope: 'workspace', workspacePath, key }
-      }
-      return { scope: 'user', workspacePath: '', key: 'user' }
     }
 
     function NativeSelect(props) {
@@ -386,7 +405,7 @@ window.__ModuleLoader__.load({
         flexShrink: 0,
         maxWidth: '60%',
       },
-      scopeBadge: {
+      profileBadge: {
         fontSize: 11,
         lineHeight: '16px',
         padding: '1px 6px',
@@ -395,6 +414,10 @@ window.__ModuleLoader__.load({
         color: 'var(--dsw-alias-label-tertiary)',
         border: '0.5px solid var(--dsw-alias-border-l2)',
         flexShrink: 0,
+        maxWidth: 220,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
       },
       transportBadge: {
         fontSize: 11,
@@ -427,6 +450,8 @@ window.__ModuleLoader__.load({
             ? 'var(--dsw-alias-state-success-primary, #22c55e)'
             : status === 'disabled'
             ? 'var(--dsw-alias-border-l3, #94a3b8)'
+            : status === 'connecting'
+            ? 'var(--dsw-alias-state-warn-primary, #f59e0b)'
             : 'var(--dsw-alias-state-error-primary, #ef4444)',
       }),
       cardControls: {
@@ -475,6 +500,16 @@ window.__ModuleLoader__.load({
         textOverflow: 'ellipsis',
         whiteSpace: 'nowrap',
       },
+      warningMarker: {
+        fontSize: 11,
+        lineHeight: '16px',
+        padding: '0 6px',
+        borderRadius: 4,
+        background: 'var(--dsw-alias-state-warn-tertiary, rgba(245, 158, 11, 0.08))',
+        color: 'var(--dsw-alias-state-warn-label, #b45309)',
+        border: '0.5px solid var(--dsw-alias-state-warn-secondary, rgba(245, 158, 11, 0.35))',
+        flexShrink: 0,
+      },
       toolsList: {
         marginTop: 6,
         paddingTop: 8,
@@ -483,12 +518,49 @@ window.__ModuleLoader__.load({
         flexDirection: 'column',
         gap: 8,
       },
+      banner: {
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: 8,
+        padding: '10px 12px',
+        borderRadius: 8,
+        fontSize: 12,
+        lineHeight: '18px',
+        color: 'var(--dsw-alias-label-secondary)',
+      },
+      bannerWarning: {
+        background: 'var(--dsw-alias-state-warn-tertiary, rgba(245, 158, 11, 0.08))',
+        border: '1px solid var(--dsw-alias-state-warn-secondary, rgba(245, 158, 11, 0.35))',
+      },
+      bannerError: {
+        background: 'var(--dsw-alias-state-error-bg, rgba(239, 68, 68, 0.08))',
+        border: '1px solid var(--dsw-alias-state-error-border, rgba(239, 68, 68, 0.35))',
+      },
+      bannerInfo: {
+        background: 'var(--dsw-alias-bg-layer-1)',
+        border: '1px solid var(--dsw-alias-border-l2)',
+      },
+      bannerIcon: {
+        display: 'inline-flex',
+        marginTop: 2,
+        flexShrink: 0,
+      },
+      bannerBody: {
+        flex: 1,
+        minWidth: 0,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+      },
+      bannerTitle: {
+        fontWeight: 600,
+        marginBottom: 2,
+      },
       warningBox: {
         marginTop: 6,
         padding: '8px 10px',
         borderRadius: 8,
-        background: 'var(--dsw-alias-state-warning-bg, rgba(245, 158, 11, 0.08))',
-        border: '1px solid var(--dsw-alias-state-warning-border, rgba(245, 158, 11, 0.35))',
+        background: 'var(--dsw-alias-state-warn-tertiary, rgba(245, 158, 11, 0.08))',
+        border: '1px solid var(--dsw-alias-state-warn-secondary, rgba(245, 158, 11, 0.35))',
         color: 'var(--dsw-alias-label-secondary)',
         fontSize: 12,
         lineHeight: '18px',
@@ -531,6 +603,11 @@ window.__ModuleLoader__.load({
         fontWeight: 600,
         color: 'var(--dsw-alias-label-secondary)',
         marginBottom: 4,
+      },
+      detailHint: {
+        fontSize: 12,
+        lineHeight: '18px',
+        color: 'var(--dsw-alias-label-tertiary)',
       },
       toolItem: {
         display: 'flex',
@@ -575,6 +652,50 @@ window.__ModuleLoader__.load({
         display: 'flex',
         flexDirection: 'column',
         gap: 16,
+      },
+      editorMeta: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+      },
+      editorMetaRow: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        gap: 12,
+      },
+      profileField: {
+        boxSizing: 'border-box',
+        display: 'inline-flex',
+        alignItems: 'center',
+        height: 32,
+        padding: '0 12px',
+        border: '1px solid var(--dsw-alias-border-l2)',
+        borderRadius: 8,
+        background: 'var(--dsw-alias-bg-module-platform)',
+        color: 'var(--dsw-alias-label-primary)',
+        fontSize: 13,
+        lineHeight: '20px',
+        maxWidth: '60%',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      },
+      patchLine: {
+        display: 'flex',
+        alignItems: 'baseline',
+        gap: 6,
+        minWidth: 0,
+        fontSize: 12,
+        lineHeight: '18px',
+        color: 'var(--dsw-alias-label-tertiary)',
+      },
+      patchPath: {
+        fontFamily: 'Menlo, Monaco, Consolas, monospace',
+        color: 'var(--dsw-alias-label-secondary)',
+        wordBreak: 'break-all',
+        flex: 1,
+        minWidth: 0,
       },
       field: {
         display: 'flex',
@@ -628,39 +749,161 @@ window.__ModuleLoader__.load({
       },
     }
 
-    // Add / Edit Server Component
-    const EMPTY_JSON_TEMPLATE = '{\n  "mcpServers": {\n  }\n}'
+    // ---- JSON wrapper analysis (kept compatible with the old import shapes) ----
 
+    function isPlainObject(value) {
+      return value !== null && typeof value === 'object' && !Array.isArray(value)
+    }
+
+    function looksLikeOfficialConfig(value) {
+      if (!isPlainObject(value)) return false
+      return typeof value.transport === 'string' || typeof value.command === 'string' || typeof value.url === 'string'
+    }
+
+    function entryName(item) {
+      if (!isPlainObject(item)) return ''
+      if (typeof item.name === 'string' && item.name) return item.name
+      if (typeof item.serverName === 'string' && item.serverName) return item.serverName
+      return ''
+    }
+
+    function extractJsonEntries(parsed) {
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) => ({ name: entryName(item) })).filter((entry) => entry.name)
+      }
+      if (!isPlainObject(parsed)) return []
+
+      if (isPlainObject(parsed.mcpServers)) {
+        return Object.keys(parsed.mcpServers).map((name) => ({ name }))
+      }
+      if (Array.isArray(parsed.servers)) {
+        return parsed.servers.map((item) => ({ name: entryName(item) })).filter((entry) => entry.name)
+      }
+      if (isPlainObject(parsed.servers)) {
+        return Object.keys(parsed.servers).map((name) => ({ name }))
+      }
+      if (looksLikeOfficialConfig(parsed)) {
+        const name = entryName(parsed)
+        return name ? [{ name }] : []
+      }
+
+      // Bare map: { "server-name": { ... } }
+      return Object.entries(parsed)
+        .filter(([, value]) => isPlainObject(value))
+        .map(([name]) => ({ name }))
+    }
+
+    function analyzeJson(text) {
+      if (!text || !text.trim()) return { valid: false, message: '请输入 JSON 配置' }
+      let parsed
+      try {
+        parsed = JSON.parse(text)
+      } catch (err) {
+        return { valid: false, message: 'JSON 语法错误: ' + (err?.message || String(err)) }
+      }
+      if (!parsed || typeof parsed !== 'object') {
+        return { valid: false, message: 'JSON 根元素必须为对象或数组' }
+      }
+
+      const names = extractJsonEntries(parsed).map((entry) => entry.name)
+      const count = names.length
+      if (!count) return { valid: false, count: 0, names, message: translate('nameUnresolved') }
+
+      const preview = names.slice(0, 3).join(', ') + (names.length > 3 ? '...' : '')
+      return {
+        valid: true,
+        count,
+        names,
+        message: `有效配置: 检测到 ${count} 个服务 (${preview})`,
+      }
+    }
+
+    // Official @deepseek-ai/dsh-mcp-client config for one server, used to seed
+    // the JSON editor from the current row.
+    function serverToJsonEntry(server) {
+      const entry = { transport: server.transport || 'stdio' }
+      if (entry.transport === 'stdio') {
+        if (server.command) entry.command = server.command
+        if (Array.isArray(server.args) && server.args.length > 0) entry.args = server.args
+        if (server.env && Object.keys(server.env).length > 0) entry.env = server.env
+        if (server.cwd) entry.cwd = server.cwd
+      } else {
+        if (server.url) entry.url = server.url
+        if (server.headers && Object.keys(server.headers).length > 0) entry.headers = server.headers
+      }
+      if (typeof server.toolCallTimeoutMs === 'number' && server.toolCallTimeoutMs > 0) {
+        entry.toolCallTimeoutMs = server.toolCallTimeoutMs
+      }
+      if (server.reconnect && typeof server.reconnect === 'object') entry.reconnect = server.reconnect
+      if (typeof server.failOnStartupError === 'boolean') entry.failOnStartupError = server.failOnStartupError
+      if (typeof server.maxInstructionBytes === 'number') entry.maxInstructionBytes = server.maxInstructionBytes
+      entry.enabled = Boolean(server.enabled)
+      return entry
+    }
+
+    function sourceBadgeText(server) {
+      if (server.source === 'panel' || server.origin === 'panel') return translate('sourcePanel')
+      if (server.origin === 'magpie') return translate('sourceMagpie')
+      return translate('sourcePluginEntry')
+    }
+
+    function sourceBadgeHint(server) {
+      if (server.source === 'panel' || server.origin === 'panel') return translate('sourcePanelHint')
+      return translate('foreignHint', { origin: server.originLabel || sourceBadgeText(server) })
+    }
+
+    function formatReconnect(reconnect) {
+      if (!isPlainObject(reconnect)) return ''
+      const parts = [reconnect.enabled === false ? '已停用' : '已启用']
+      if (typeof reconnect.initialDelayMs === 'number') parts.push(`初始 ${reconnect.initialDelayMs}ms`)
+      if (typeof reconnect.maxDelayMs === 'number') parts.push(`上限 ${reconnect.maxDelayMs}ms`)
+      if (typeof reconnect.maxAttempts === 'number') parts.push(`最多 ${reconnect.maxAttempts} 次`)
+      return parts.join('，')
+    }
+
+    function subRowLabel(server, count) {
+      if (!server.enabled || server.status === 'disabled') return translate('disabled')
+      if (server.error) return translate('error')
+      if (server.status === 'connecting') return translate('connecting')
+      if (count > 0) return translate('toolsEnabled', { count })
+      return translate('noTools')
+    }
+
+    function configRow(label, value) {
+      return h('div', { key: label },
+        h('span', { style: css.configKey }, label),
+        h('span', { style: css.configVal }, value)
+      )
+    }
+
+    function restartNoticeText(reason) {
+      if (!reason || reason === 'no-hmr') return translate('restartRequiredBody')
+      if (reason === 'overridden') return translate('restartRequiredOverridden')
+      if (reason === 'no-profile') return translate('restartRequiredNoProfile')
+      return translate('restartRequiredBody') + '（原因: ' + reason + '）'
+    }
+
+    function renderBanner(kind, title, body) {
+      const style = kind === 'error'
+        ? { ...css.banner, ...css.bannerError }
+        : kind === 'info'
+        ? { ...css.banner, ...css.bannerInfo }
+        : { ...css.banner, ...css.bannerWarning }
+      return h('div', { style },
+        h('span', { style: css.bannerIcon }, h(Icons.Alert, { size: 14 })),
+        h('div', { style: css.bannerBody },
+          title ? h('div', { style: css.bannerTitle }, title) : null,
+          body ? h('div', null, body) : null
+        )
+      )
+    }
+
+    // Add / Edit Server Component
     function ServerEditor(props) {
-      const { initialServer, workspaces, onSave, onCancel, defaultWorkspace, defaultScopeKey } = props
+      const { initialServer, targetPath, profile, onSave, onCancel } = props
       const isEditing = Boolean(initialServer)
 
       const [mode, setMode] = useState(isEditing ? 'form' : 'json')
-
-      // Scope Options: User (Global) + Each individual workspace
-      const scopeOptions = useMemo(() => {
-        const list = [
-          { id: 'user', label: translate('scopeUser') },
-        ]
-        for (const ws of workspaces) {
-          list.push({
-            id: `ws:${ws.path}`,
-            label: `${translate('scopeWorkspacePrefix')}${ws.title || ws.path}`,
-          })
-        }
-        return list
-      }, [workspaces])
-
-      const initialScopeValue = useMemo(() => {
-        if (initialServer?.scope === 'user') return 'user'
-        if (initialServer?.workspacePath) return `ws:${initialServer.workspacePath}`
-        if (defaultScopeKey === 'user') return 'user'
-        if (typeof defaultScopeKey === 'string' && defaultScopeKey.startsWith('ws:')) return defaultScopeKey
-        if (defaultWorkspace) return `ws:${defaultWorkspace}`
-        return 'user'
-      }, [initialServer, defaultWorkspace, defaultScopeKey])
-
-      const [selectedScope, setSelectedScope] = useState(initialScopeValue)
       const [name, setName] = useState(initialServer?.name || '')
       const [transport, setTransport] = useState(initialServer?.transport || 'stdio')
       const [command, setCommand] = useState(initialServer?.command || '')
@@ -672,132 +915,89 @@ window.__ModuleLoader__.load({
       const [headersList, setHeadersList] = useState(
         Object.entries(initialServer?.headers || {}).map(([k, v]) => ({ key: k, val: v }))
       )
-
       const [jsonText, setJsonText] = useState(() => {
         if (initialServer) {
-          const s = { ...initialServer }
-          const sName = s.name
-          delete s.name
-          delete s.scope
-          delete s.workspacePath
-          delete s.status
-          delete s.error
-          delete s.toolCount
-          delete s.tools
-          return JSON.stringify({ [sName]: s }, null, 2)
+          return JSON.stringify({ [initialServer.name]: serverToJsonEntry(initialServer) }, null, 2)
         }
         return EMPTY_JSON_TEMPLATE
       })
-
       const [error, setError] = useState('')
       const [busy, setBusy] = useState(false)
 
-      const jsonValidation = useMemo(() => {
-        if (!jsonText.trim()) return { valid: false, message: '请输入 JSON 配置' }
-        try {
-          const parsed = JSON.parse(jsonText)
-          if (!parsed || typeof parsed !== 'object') return { valid: false, message: 'JSON 根元素必须为对象或数组' }
-
-          let count = 0
-          const names = []
-          if (parsed.mcpServers && typeof parsed.mcpServers === 'object') {
-            for (const k of Object.keys(parsed.mcpServers)) {
-              count++
-              names.push(k)
-            }
-          } else if (Array.isArray(parsed.servers)) {
-            for (const s of parsed.servers) {
-              if (s?.name) { count++; names.push(s.name) }
-            }
-          } else if (Array.isArray(parsed)) {
-            for (const s of parsed) {
-              if (s?.name) { count++; names.push(s.name) }
-            }
-          } else if (parsed.servers && typeof parsed.servers === 'object') {
-            for (const k of Object.keys(parsed.servers)) {
-              count++
-              names.push(k)
-            }
-          } else {
-            const keys = Object.keys(parsed)
-            if (keys.length > 0) {
-              count = keys.length
-              names.push(...keys.slice(0, 3))
-            }
-          }
-
-          return {
-            valid: true,
-            count,
-            message: count > 0
-              ? `有效配置: 检测到 ${count} 个服务 (${names.slice(0, 3).join(', ')}${names.length > 3 ? '...' : ''})`
-              : '未检测到明确的服务名称',
-          }
-        } catch (e) {
-          return { valid: false, message: 'JSON 语法错误: ' + e.message }
-        }
-      }, [jsonText])
+      const jsonAnalysis = useMemo(() => analyzeJson(jsonText), [jsonText])
 
       async function handleSave() {
         setError('')
         setBusy(true)
 
         try {
-          const selected = parseScopeKey(selectedScope)
-          const targetScope = selected.scope
-          const targetWs = selected.workspacePath
-
           if (mode === 'json') {
-            if (!jsonValidation.valid || !jsonValidation.count) {
-              throw new Error(jsonValidation.message || translate('invalidJson'))
+            if (!jsonAnalysis.valid) {
+              throw new Error(jsonAnalysis.message || translate('invalidJson'))
             }
-            await onSave({
-              rawJson: jsonText,
-              scope: targetScope,
-              workspacePath: targetWs,
-              replaceName: isEditing ? initialServer.name : undefined,
-              createOnly: !isEditing,
-            })
-          } else {
-            const finalName = name.trim()
-            if (!finalName) throw new Error(translate('nameRequired'))
-
-            const envObj = {}
-            for (const item of envList) {
-              if (item.key.trim()) envObj[item.key.trim()] = item.val
-            }
-            const headersObj = {}
-            for (const item of headersList) {
-              if (item.key.trim()) headersObj[item.key.trim()] = item.val
+            const badNames = jsonAnalysis.names.filter((serverName) => !SERVER_NAME_RE.test(serverName))
+            if (badNames.length > 0) {
+              throw new Error(translate('nameInvalid') + ' (' + badNames.slice(0, 3).join(', ') + ')')
             }
 
-            if (transport === 'stdio' && !command.trim()) {
-              throw new Error(translate('commandRequired'))
+            const payload = { rawJson: jsonText, createOnly: !isEditing }
+            if (isEditing && jsonAnalysis.names.length > 0 && !jsonAnalysis.names.includes(initialServer.name)) {
+              payload.replaceName = initialServer.name
             }
-            if (transport === 'streamable-http' && !url.trim()) {
-              throw new Error(translate('urlRequired'))
-            }
-
-            const serverPayload = {
-              transport,
-              command: command.trim(),
-              args: argsStr.trim() ? argsStr.trim().split(/\s+/) : [],
-              env: envObj,
-              url: url.trim(),
-              headers: headersObj,
-              enabled: true,
-            }
-
-            await onSave({
-              name: finalName,
-              server: serverPayload,
-              scope: targetScope,
-              workspacePath: targetWs,
-              createOnly: !isEditing,
-            })
+            await onSave(payload)
+            return
           }
+
+          const finalName = name.trim()
+          if (!finalName) throw new Error(translate('nameRequired'))
+          if (!SERVER_NAME_RE.test(finalName)) throw new Error(translate('nameInvalid'))
+
+          const envObj = {}
+          for (const item of envList) {
+            if (item.key.trim()) envObj[item.key.trim()] = item.val
+          }
+          const headersObj = {}
+          for (const item of headersList) {
+            if (item.key.trim()) headersObj[item.key.trim()] = item.val
+          }
+
+          if (transport === 'stdio' && !command.trim()) {
+            throw new Error(translate('commandRequired'))
+          }
+          if (transport === 'streamable-http' && !url.trim()) {
+            throw new Error(translate('urlRequired'))
+          }
+
+          const serverPayload = {
+            transport,
+            command: command.trim(),
+            args: argsStr.trim() ? argsStr.trim().split(/\s+/) : [],
+            env: envObj,
+            url: url.trim(),
+            headers: headersObj,
+            enabled: isEditing ? Boolean(initialServer.enabled) : true,
+          }
+
+          // Preserve advanced official-config fields the form does not edit.
+          if (isEditing) {
+            if (initialServer.cwd) serverPayload.cwd = initialServer.cwd
+            if (typeof initialServer.toolCallTimeoutMs === 'number' && initialServer.toolCallTimeoutMs > 0) {
+              serverPayload.toolCallTimeoutMs = initialServer.toolCallTimeoutMs
+            }
+            if (initialServer.reconnect && typeof initialServer.reconnect === 'object') {
+              serverPayload.reconnect = initialServer.reconnect
+            }
+            if (typeof initialServer.failOnStartupError === 'boolean') {
+              serverPayload.failOnStartupError = initialServer.failOnStartupError
+            }
+            if (typeof initialServer.maxInstructionBytes === 'number') {
+              serverPayload.maxInstructionBytes = initialServer.maxInstructionBytes
+            }
+          }
+
+          await onSave({ name: finalName, server: serverPayload, createOnly: !isEditing })
         } catch (err) {
-          setError(err.message || '保存失败')
+          setError(err?.message || '保存失败')
           setBusy(false)
         }
       }
@@ -828,16 +1028,18 @@ window.__ModuleLoader__.load({
 
         // Body card
         h('div', { style: css.formCard },
-          // Scope row with native dropdown
-          h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 } },
-            h('span', { style: css.label }, translate('scope')),
-            h(NativeSelect, {
-              value: selectedScope,
-              options: scopeOptions,
-              onChange: setSelectedScope,
-              label: translate('scope'),
-              disabled: isEditing,
-            })
+          // Profile row mirrors the original first row; the patch path stays
+          // available as a read-only hint underneath it.
+          h('div', { style: css.editorMeta },
+            h('div', { style: css.editorMetaRow },
+              h('span', { style: css.label }, translate('profileLabel')),
+              h('span', { style: css.profileField, title: targetPath || '' },
+                profile?.name || translate('targetPatchMissing'))
+            ),
+            h('div', { style: css.patchLine, title: targetPath || '' },
+              h('span', null, translate('targetPatch')),
+              h('span', { style: css.patchPath }, targetPath || translate('targetPatchMissing'))
+            )
           ),
 
           // JSON Mode
@@ -853,12 +1055,12 @@ window.__ModuleLoader__.load({
               h('span', {
                 style: {
                   fontSize: 12,
-                  color: jsonValidation.valid
+                  color: jsonAnalysis.valid
                     ? 'var(--dsw-alias-state-success-primary, #22c55e)'
                     : 'var(--dsw-alias-label-tertiary)',
                   marginTop: 4,
                 },
-              }, jsonValidation.valid ? jsonValidation.message : translate('jsonHint'))
+              }, jsonAnalysis.valid ? jsonAnalysis.message : translate('jsonHint'))
             )
           ) : (
             // Form Mode
@@ -1028,57 +1230,84 @@ window.__ModuleLoader__.load({
       const rpc = props.connection?.rpc
 
       const [servers, setServers] = useState([])
-      const [workspaces, setWorkspaces] = useState([])
-      const [activeWorkspace, setActiveWorkspace] = useState('')
-      const [filterScope, setFilterScope] = useState('user') // 'user' | 'ws:<path>'
+      const [profile, setProfile] = useState(null)
+      const [canManage, setCanManage] = useState(false)
+      const [nativeControlAvailable, setNativeControlAvailable] = useState(false)
+      const [listWarnings, setListWarnings] = useState([])
       const [loading, setLoading] = useState(true)
       const [view, setView] = useState('list') // 'list' | 'add' | 'edit'
       const [editingServer, setEditingServer] = useState(null)
       const [editorNonce, setEditorNonce] = useState(0)
-      const [expandedTools, setExpandedTools] = useState(new Set())
+      const [expanded, setExpanded] = useState(new Set())
+      const [sourceFilter, setSourceFilter] = useState('all')
       const [actionBusy, setActionBusy] = useState(false)
+      const [restartNotice, setRestartNotice] = useState('')
+      const [listError, setListError] = useState(null)
 
-      const filterOptions = useMemo(() => {
-        const list = [
-          { id: 'user', label: translate('scopeUser') },
-        ]
-        for (const ws of workspaces) {
-          list.push({
-            id: `ws:${ws.path}`,
-            label: `${translate('scopeWorkspacePrefix')}${ws.title || ws.path}`,
-          })
+      const profileAvailable = Boolean(profile?.available)
+
+      const sourceFilterOptions = [
+        { id: 'all', label: translate('sourceAll') },
+        { id: 'panel', label: translate('sourcePanel') },
+        { id: 'magpie', label: translate('sourceMagpie') },
+        { id: 'plugin', label: translate('sourcePluginEntry') },
+      ]
+
+      const visibleServers = useMemo(() => {
+        if (sourceFilter === 'all') return servers
+        return servers.filter((server) => {
+          const isPanel = server.source === 'panel' || server.origin === 'panel'
+          const isMagpie = server.origin === 'magpie'
+          if (sourceFilter === 'panel') return isPanel
+          if (sourceFilter === 'magpie') return isMagpie
+          return !isPanel && !isMagpie
+        })
+      }, [servers, sourceFilter])
+
+      const applyResponse = useCallback((response) => {
+        if (!response || typeof response !== 'object') return
+        if (Array.isArray(response.servers)) setServers(response.servers)
+        if (response.profile && typeof response.profile === 'object') setProfile(response.profile)
+        if (typeof response.canManage === 'boolean') setCanManage(response.canManage)
+        if (typeof response.nativeControlAvailable === 'boolean') {
+          setNativeControlAvailable(response.nativeControlAvailable)
         }
-        return list
-      }, [workspaces])
+        setListWarnings(Array.isArray(response.warnings) ? response.warnings : [])
+      }, [])
 
-      const refresh = useCallback(async (scopeKey = filterScope) => {
+      const refresh = useCallback(async () => {
         setLoading(true)
+        setListError('')
         try {
-          const view = parseScopeKey(scopeKey)
-          const res = await apiCall(rpc, 'list', {
-            scope: view.scope,
-            workspacePath: view.workspacePath,
-          })
-          const incoming = res?.servers || []
-          setServers(
-            incoming.filter((server) => (
-              view.scope === 'user' ? server.scope === 'user' : server.scope === 'workspace'
-            ))
-          )
-          if (res?.workspaces) setWorkspaces(res.workspaces)
-          if (res?.activeWorkspace) setActiveWorkspace(res.activeWorkspace)
-        } catch {}
-        finally {
+          const response = await apiCall(rpc, 'list', {})
+          applyResponse(response)
+          // The restart warning belongs to the mutation that caused it; an
+          // explicit refresh re-reads live state and clears it.
+          setRestartNotice('')
+        } catch (err) {
+          setListError({ title: translate('loadFailed'), message: err?.message || String(err) })
+        } finally {
           setLoading(false)
         }
-      }, [rpc, filterScope])
+      }, [rpc, applyResponse])
 
       useEffect(() => {
-        refresh(filterScope)
-      }, [filterScope])
+        refresh()
+      }, [refresh])
 
-      function toggleTools(uniqueKey) {
-        setExpandedTools((prev) => {
+      async function applyMutationResult(response) {
+        if (response && Array.isArray(response.servers)) {
+          applyResponse(response)
+        } else {
+          await refresh()
+        }
+        if (response && response.application === 'restart-required') {
+          setRestartNotice(restartNoticeText(response.restartReason))
+        }
+      }
+
+      function toggleExpanded(uniqueKey) {
+        setExpanded((prev) => {
           const next = new Set(prev)
           if (next.has(uniqueKey)) next.delete(uniqueKey)
           else next.add(uniqueKey)
@@ -1088,69 +1317,56 @@ window.__ModuleLoader__.load({
 
       async function handleToggleEnabled(server) {
         setActionBusy(true)
+        setListError('')
         try {
-          const view = parseScopeKey(filterScope)
-          await apiCall(rpc, 'toggle', {
-            name: server.name,
-            scope: view.scope,
-            workspacePath: view.workspacePath,
-            enabled: !server.enabled,
-          })
-          await refresh(filterScope)
+          const response = await apiCall(rpc, 'toggle', { name: server.name, enabled: !server.enabled })
+          await applyMutationResult(response)
         } catch (err) {
-          alert(`更新失败: ${err.message}`)
+          setListError({ title: translate('actionFailed'), message: err?.message || String(err) })
         } finally {
           setActionBusy(false)
         }
       }
 
       async function handleDelete(server) {
-        const entryId = server.pluginEntry?.patchEntryId
-          || (server.source === 'plugin' ? server.patchEntryId : '')
-          || ''
-        const message = entryId
-          ? translate('confirmDeletePluginEntry', { name: server.name, entry: entryId })
-          : translate('confirmDelete', { name: server.name })
-        if (!confirm(message)) return
+        if (!confirm(translate('confirmDelete', { name: server.name }))) return
         setActionBusy(true)
+        setListError('')
         try {
-          const view = parseScopeKey(filterScope)
-          await apiCall(rpc, 'delete', {
-            name: server.name,
-            scope: view.scope,
-            workspacePath: view.workspacePath,
-          })
-          await refresh(filterScope)
+          const response = await apiCall(rpc, 'delete', { name: server.name })
+          await applyMutationResult(response)
         } catch (err) {
-          alert(`删除失败: ${err.message}`)
+          setListError({ title: translate('actionFailed'), message: err?.message || String(err) })
         } finally {
           setActionBusy(false)
         }
       }
 
       async function handleSaveServer(payload) {
-        await apiCall(rpc, 'save', payload)
-        const nextFilter = payload.scope === 'user' || !payload.workspacePath
-          ? 'user'
-          : `ws:${payload.workspacePath}`
-        setView('list')
-        setEditingServer(null)
-        if (nextFilter === filterScope) {
-          await refresh(nextFilter)
-        } else {
-          setFilterScope(nextFilter)
+        setActionBusy(true)
+        setListError('')
+        try {
+          const response = await apiCall(rpc, 'save', payload)
+          await applyMutationResult(response)
+          setView('list')
+          setEditingServer(null)
+          return response
+        } catch (err) {
+          // The editor renders the failure inline; keep the list banner clean.
+          throw err
+        } finally {
+          setActionBusy(false)
         }
       }
 
       if (view === 'add' || view === 'edit') {
         return h(ServerEditor, {
           key: view === 'edit'
-            ? `edit:${editingServer?.scope}:${editingServer?.workspacePath || ''}:${editingServer?.name}`
-            : `add:${editorNonce}`,
+            ? 'edit:' + (editingServer?.entryId || editingServer?.patchEntryId || editingServer?.name)
+            : 'add:' + editorNonce,
           initialServer: editingServer,
-          workspaces,
-          defaultWorkspace: activeWorkspace,
-          defaultScopeKey: filterScope,
+          targetPath: profile?.path || '',
+          profile,
           onSave: handleSaveServer,
           onCancel: () => {
             setView('list')
@@ -1159,30 +1375,61 @@ window.__ModuleLoader__.load({
         })
       }
 
+      const banners = []
+      if (restartNotice) {
+        banners.push(h('div', { key: 'restart' },
+          renderBanner('warning', translate('restartRequiredTitle'), restartNotice)
+        ))
+      }
+      if (profile && !profileAvailable) {
+        banners.push(h('div', { key: 'profile' },
+          renderBanner('warning', translate('profileMissing'), translate('profileMissingDetail'))
+        ))
+      }
+      if (listWarnings.length > 0) {
+        banners.push(h('div', { key: 'warnings' },
+          renderBanner('info', translate('warningsTitle'), listWarnings.join('\n'))
+        ))
+      }
+      if (listError) {
+        banners.push(h('div', { key: 'error' },
+          renderBanner('error', listError.title, listError.message)
+        ))
+      }
+
       return h('div', { style: css.container },
-        // Top Header Bar
+        // Top Header Bar — same layout as 0.1.7: title block, then the
+        // filter control, then Add, then Refresh.
         h('div', { style: css.header },
-          h('div', null,
+          h('div', { style: { minWidth: 0 } },
             h('h2', { style: css.title }, translate('title')),
-            h('p', { style: css.subtitle }, translate('subtitle'))
+            h('p', { style: css.subtitle },
+              translate('subtitle')
+              + (profile
+                ? ' · ' + (profileAvailable
+                  ? translate('profileBadge', { name: profile.name })
+                  : translate('profileMissing'))
+                : ''))
           ),
           h('div', { style: css.headerActions },
-            // Scope / Workspace switcher dropdown (Native DSH Select)
             h(NativeSelect, {
-              value: filterScope,
-              options: filterOptions,
-              onChange: (val) => setFilterScope(val),
-              label: translate('scope'),
+              value: sourceFilter,
+              options: sourceFilterOptions,
+              onChange: (value) => setSourceFilter(value),
+              label: translate('sourceFilter'),
               disabled: loading || actionBusy,
             }),
             h('button', {
               type: 'button',
               style: css.btnPrimary,
               onClick: () => {
+                if (!canManage) return
                 setEditingServer(null)
                 setEditorNonce((n) => n + 1)
                 setView('add')
               },
+              title: canManage ? translate('addMcp') : translate('manageHint'),
+              disabled: loading || actionBusy || !canManage,
             },
               h(Icons.Plus, { size: 14 }),
               translate('addMcp')
@@ -1190,41 +1437,43 @@ window.__ModuleLoader__.load({
             h('button', {
               type: 'button',
               style: css.iconBtn,
-              onClick: () => refresh(filterScope),
+              onClick: refresh,
               title: translate('refresh'),
               disabled: loading || actionBusy,
             }, h(Icons.Refresh, { size: 16 }))
           )
         ),
 
-        // Server List
-        servers.length === 0 && !loading ? (
-          h('div', { style: css.emptyBox }, translate('emptyList'))
-        ) : (
-          servers.map((server) => {
-            // Unique key for each instance: scope:workspacePath:name
-            const uniqueKey = `${server.scope}:${server.workspacePath || ''}:${server.name}`
-            const isExpanded = expandedTools.has(uniqueKey)
-            const count = server.toolCount || (server.tools ? server.tools.length : 0)
+        banners.length > 0 ? banners : null,
 
-            const scopeLabel = server.scope === 'user'
-              ? translate('scopeUser')
-              : `${translate('scopeWorkspacePrefix')}${workspaces.find((w) => w.path === server.workspacePath)?.title || server.workspacePath || '当前项目'}`
-            const sourceLabel = server.source === 'panel'
-              ? translate('sourcePanel')
-              : server.origin === 'magpie'
-              ? translate('sourceMagpie')
-              : translate('sourcePluginEntry')
-            const pluginEntry = server.pluginEntry?.patchEntryId
-              ? server.pluginEntry
-              : server.source === 'plugin' && server.patchEntryId
-              ? { patchEntryId: server.patchEntryId, originLabel: server.originLabel, enabled: server.enabled }
-              : null
-            const sourceHint = server.source === 'panel'
-              ? pluginEntry
-                ? translate('sourcePanelWithPluginHint', { entry: pluginEntry.patchEntryId })
-                : translate('sourcePanelHint')
-              : translate('pluginEntryHint')
+        // Server List
+        visibleServers.length === 0 && !loading ? (
+          h('div', { style: css.emptyBox },
+            profileAvailable ? translate('emptyList') : translate('noProfileEmpty'))
+        ) : (
+          visibleServers.map((server) => {
+            const uniqueKey = (server.source || 'panel') + ':' + (server.entryId || server.patchEntryId || server.name)
+            const isExpanded = expanded.has(uniqueKey)
+            const count = typeof server.toolCount === 'number' ? server.toolCount : (server.tools || []).length
+            const warnings = Array.isArray(server.warnings) ? server.warnings : []
+            const tools = Array.isArray(server.tools) ? server.tools : []
+            const controllable = server.controllable !== false
+            const sourceLabel = sourceBadgeText(server)
+            const sourceHint = sourceBadgeHint(server)
+
+            const editTitle = !canManage
+              ? translate('manageHint')
+              : server.readonly
+              ? translate('readonlyPluginHint')
+              : translate('edit')
+            const deleteTitle = !canManage
+              ? translate('manageHint')
+              : server.readonly
+              ? translate('readonlyPluginHint')
+              : translate('delete')
+            const toggleTitle = !controllable
+              ? (nativeControlAvailable ? translate('toggleDisabledHint') : translate('nativeControlUnavailable'))
+              : (server.enabled ? '停用' : '启用')
 
             return h('div', { key: uniqueKey, style: css.serverCard },
               // Main row
@@ -1232,59 +1481,62 @@ window.__ModuleLoader__.load({
                 h('div', { style: css.serverTitleArea },
                   h('span', { style: css.serverName, title: server.name }, server.name),
                   h('span', { style: css.statusDot(server.status) }),
-                  h('span', { style: css.scopeBadge }, scopeLabel),
+                  profile && profileAvailable
+                    ? h('span', {
+                        style: css.profileBadge,
+                        title: translate('profileBadge', { name: profile.name }),
+                      }, profile.name)
+                    : null,
                   h('span', { style: css.sourceBadge, title: sourceHint }, sourceLabel),
                   server.transport ? h('span', { style: css.transportBadge }, server.transport) : null
                 ),
                 h('div', { style: css.cardControls },
-                  // Edit (native-only rows are owned by the DSH plugin tree)
+                  // Edit (read-only rows are owned by their source)
                   h('button', {
                     type: 'button',
-                    style: { ...css.iconBtn, border: 'none', width: 28, height: 28 },
+                    style: { ...css.iconBtn, border: 'none', width: 28, height: 28, opacity: (canManage && !server.readonly) ? 1 : 0.45 },
                     onClick: () => {
-                      if (server.readonly) return
+                      if (!canManage || server.readonly) return
                       setEditingServer(server)
                       setView('edit')
                     },
-                    title: server.readonly ? translate('readonlyPluginHint') : translate('edit'),
-                    disabled: actionBusy || Boolean(server.readonly),
+                    title: editTitle,
+                    disabled: actionBusy || !canManage || Boolean(server.readonly),
                   }, h(Icons.Edit, { size: 15 })),
                   // Trash
                   h('button', {
                     type: 'button',
-                    style: { ...css.iconBtn, border: 'none', width: 28, height: 28 },
+                    style: { ...css.iconBtn, border: 'none', width: 28, height: 28, opacity: (canManage && !server.readonly) ? 1 : 0.45 },
                     onClick: () => handleDelete(server),
-                    title: server.readonly ? translate('readonlyPluginHint') : translate('delete'),
-                    disabled: actionBusy || Boolean(server.readonly),
+                    title: deleteTitle,
+                    disabled: actionBusy || !canManage || Boolean(server.readonly),
                   }, h(Icons.Trash, { size: 15 })),
                   // Switch
                   h('button', {
                     type: 'button',
                     role: 'switch',
-                    'aria-checked': server.enabled,
-                    style: css.switch(server.enabled),
+                    'aria-checked': Boolean(server.enabled),
+                    title: toggleTitle,
+                    style: { ...css.switch(server.enabled), opacity: controllable ? 1 : 0.45 },
                     onClick: () => handleToggleEnabled(server),
-                    disabled: actionBusy || (Boolean(server.readonly) && server.controllable === false),
+                    disabled: actionBusy || !controllable,
                   }, h('span', { style: css.switchKnob(server.enabled) }))
                 )
               ),
 
-              // Sub-row (> N tools enabled)
-              h('div', { style: css.subRow, onClick: () => toggleTools(uniqueKey) },
+              // Sub-row: status text plus the warning marker
+              h('div', {
+                style: css.subRow,
+                onClick: () => toggleExpanded(uniqueKey),
+                title: server.error || (warnings.length > 0 ? warnings.join('\n') : undefined),
+              },
                 h('span', { style: { display: 'inline-flex', marginTop: 2, flexShrink: 0 } },
                   isExpanded ? h(Icons.ChevronDown, { size: 14 }) : h(Icons.ChevronRight, { size: 14 })
                 ),
-                h('span', { style: css.subRowText, title: server.error || (server.warnings || []).join('\n') || undefined },
-                  server.status === 'connecting'
-                    ? translate('connecting')
-                    : server.error
-                    ? translate('error')
-                    : (server.warnings || []).length > 0
-                    ? translate('conflictHint')
-                    : count > 0
-                    ? translate('toolsEnabled', { count })
-                    : translate('noTools')
-                )
+                h('span', { style: css.subRowText }, subRowLabel(server, count)),
+                warnings.length > 0
+                  ? h('span', { style: css.warningMarker, title: warnings.join('\n') }, translate('warningMarker'))
+                  : null
               ),
 
               isExpanded ? (
@@ -1295,45 +1547,59 @@ window.__ModuleLoader__.load({
                         h('div', { style: css.errorBox }, server.error)
                       )
                     : null,
-                  (server.warnings || []).length > 0
+                  warnings.length > 0
                     ? h('div', null,
                         h('div', { style: css.detailTitle }, translate('warningTitle')),
-                        h('div', { style: css.warningBox }, server.warnings.join('\n'))
+                        h('div', { style: css.warningBox }, warnings.join('\n'))
                       )
                     : null,
-                  (server.command || server.url)
-                    ? h('div', null,
-                        h('div', { style: css.detailTitle }, translate('configTitle')),
-                        h('div', { style: css.configList },
-                          server.transport ? h('div', null, h('span', { style: css.configKey }, 'transport'), h('span', { style: css.configVal }, server.transport)) : null,
-                          server.command ? h('div', null, h('span', { style: css.configKey }, 'command'), h('span', { style: css.configVal }, server.command)) : null,
-                          Array.isArray(server.args) && server.args.length > 0
-                            ? h('div', null, h('span', { style: css.configKey }, 'args'), h('span', { style: css.configVal }, server.args.join(' ')))
-                            : null,
-                          server.cwd ? h('div', null, h('span', { style: css.configKey }, 'cwd'), h('span', { style: css.configVal }, server.cwd)) : null,
-                          server.url ? h('div', null, h('span', { style: css.configKey }, 'url'), h('span', { style: css.configVal }, server.url)) : null,
-                          pluginEntry
-                            ? h('div', null,
-                                h('span', { style: css.configKey }, translate('pluginEntryLabel')),
-                                h('span', { style: css.configVal },
-                                  pluginEntry.patchEntryId
-                                  + '（' + (pluginEntry.originLabel || '') + '，'
-                                  + (pluginEntry.enabled ? translate('pluginEntryEnabled') : translate('pluginEntryDisabled'))
-                                  + '）'))
-                            : null
-                        )
-                      )
+                  h('div', null,
+                    h('div', { style: css.detailTitle }, translate('configTitle')),
+                    h('div', { style: css.configList },
+                      configRow('transport', server.transport || 'stdio'),
+                      server.command ? configRow('command', server.command) : null,
+                      Array.isArray(server.args) && server.args.length > 0
+                        ? configRow('args', server.args.join(' '))
+                        : null,
+                      server.cwd ? configRow('cwd', server.cwd) : null,
+                      server.url ? configRow('url', server.url) : null,
+                      typeof server.toolCallTimeoutMs === 'number' && server.toolCallTimeoutMs > 0
+                        ? configRow('toolCallTimeoutMs', String(server.toolCallTimeoutMs))
+                        : null,
+                      server.reconnect ? configRow('reconnect', formatReconnect(server.reconnect)) : null,
+                      typeof server.failOnStartupError === 'boolean'
+                        ? configRow('failOnStartupError', String(server.failOnStartupError))
+                        : null,
+                      typeof server.maxInstructionBytes === 'number'
+                        ? configRow('maxInstructionBytes', String(server.maxInstructionBytes))
+                        : null,
+                      configRow(translate('patchEntryLabel'), server.patchEntryId || '—'),
+                      server.entryId && server.entryId !== server.patchEntryId
+                        ? configRow(translate('entryLabel'), server.entryId)
+                        : null,
+                      configRow(translate('profilePathLabel'), profile?.path || '—')
+                    )
+                  ),
+                  server.readonly
+                    ? h('div', { style: css.detailHint }, translate('readonlyPluginHint'))
                     : null,
-                  (server.tools || []).length > 0
-                    ? server.tools.map((tool) =>
-                        h('div', { key: tool.name, style: css.toolItem },
-                          h('span', { style: css.toolName }, tool.rawName || tool.name),
-                          tool.description ? h('span', { style: css.toolDesc }, tool.description) : null
+                  h('div', null,
+                    h('div', { style: css.detailTitle }, translate('toolsTitle')),
+                    tools.length > 0
+                      ? tools.map((tool) =>
+                          h('div', { key: tool.rawName || tool.name, style: css.toolItem },
+                            h('span', { style: css.toolName }, tool.rawName || tool.name),
+                            tool.description ? h('span', { style: css.toolDesc }, tool.description) : null
+                          )
                         )
-                      )
-                    : (!server.error && server.status !== 'connecting'
-                        ? h('div', { style: css.toolDesc }, translate('noTools'))
-                        : null)
+                      : h('div', { style: css.toolDesc },
+                          !server.enabled || server.status === 'disabled'
+                            ? translate('disabled')
+                            : !server.error && server.status !== 'connecting'
+                            ? translate('noTools')
+                            : '—'
+                        )
+                  )
                 )
               ) : null
             )
