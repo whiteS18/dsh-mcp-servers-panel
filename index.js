@@ -354,7 +354,7 @@ export class McpManager {
       }
     }
     if (duplicateForeign) {
-      warnings.push('插件清单中还存在同名条目（' + (duplicateForeign.entryId || duplicateForeign.serverName) + '），官方 MCP client 可能只加载其中一个；请删除或改名。')
+      warnings.push('第三方导入中还存在同名条目（' + (duplicateForeign.entryId || duplicateForeign.serverName) + '），官方 MCP client 可能只加载其中一个；请删除或改名。')
     }
     const tools = enabled && liveEntry ? registeredMcpTools(this.ctx, serverName) : []
     const transport = config.transport === 'streamable-http' ? 'streamable-http' : 'stdio'
@@ -363,7 +363,7 @@ export class McpManager {
       entryId,
       source: 'panel',
       origin: 'panel',
-      originLabel: '面板',
+      originLabel: '本插件',
       patchEntryId: entryId,
       readonly: false,
       controllable: !this.disposed,
@@ -408,7 +408,7 @@ export class McpManager {
         warnings.push('Profile patch 读取失败：' + patchError)
       }
     } else {
-      warnings.push('当前 DSH 运行环境没有提供 profileContext；面板只能查看插件清单条目。')
+      warnings.push('当前 DSH 运行环境没有提供 profileContext；面板只能查看第三方导入的条目。')
     }
 
     const inventory = await readMcpInventory(this.ctx)
@@ -497,7 +497,7 @@ export class McpManager {
         }
         if (foreignNames.has(input.name) || foreignInPatch.has(input.name)) {
           const foreign = foreignNames.get(input.name) || foreignInPatch.get(input.name)
-          throw new Error('服务名「' + input.name + '」已被插件清单中的条目 ' + (foreign.entryId || '') + ' 使用；请换一个名称，或先在 profile patch / DSH 插件设置中移除该条目。')
+          throw new Error('服务名「' + input.name + '」已被第三方导入的条目 ' + (foreign.entryId || '') + ' 使用；请换一个名称，或先在 profile patch / DSH 插件设置中移除该条目。')
         }
       }
 
@@ -549,7 +549,7 @@ export class McpManager {
           throw new Error('已存在 MCP 服务「' + input.name + '」；请先删除或改名后再导入。')
         }
         if (foreignNames.has(input.name) || foreignInPatch.has(input.name)) {
-          throw new Error('服务名「' + input.name + '」已被插件清单中的条目使用；请先移除或改名。')
+          throw new Error('服务名「' + input.name + '」已被第三方导入的条目使用；请先移除或改名。')
         }
       }
       for (const input of inputs) patch.upsertServer(input)
@@ -568,7 +568,7 @@ export class McpManager {
         const foreign = (await this.foreignNameMap()).get(serverName)
           || patch.rows().find((row) => !row.panelManaged && row.serverName === serverName)
         if (foreign) {
-          throw new Error('该服务器来自 DSH 插件清单（可能由 Magpie 等第三方工具写入），面板无法删除；请在 DSH 插件设置或 profile patch 中移除对应条目。')
+          throw new Error('该服务器由第三方导入，本插件无法删除；请在 DSH 插件设置或 profile patch 中移除对应条目。')
         }
         throw new Error('未找到要删除的 MCP 服务器「' + serverName + '」')
       }
@@ -599,7 +599,7 @@ export class McpManager {
       if (!entry) throw new Error('未找到 MCP 服务器「' + serverName + '」')
       const result = await setNativeServerEnabled(this.ctx, entry.loaderEntryId || entry.entryId, enabled)
       if (result?.application === 'failed') {
-        throw new Error(result?.error?.message || '启停插件清单中的 MCP 条目失败')
+        throw new Error(result?.error?.message || '启停第三方导入的 MCP 条目失败')
       }
       const data = await this.list()
       const extraWarnings = result?.application === 'overridden'

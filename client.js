@@ -157,13 +157,12 @@ window.__ModuleLoader__.load({
       patchEntryLabel: '补丁条目 ID',
       entryLabel: '运行时条目 ID',
       profilePathLabel: 'profile patch 路径',
-      sourcePanel: '面板',
-      sourceMagpie: 'Magpie',
-      sourcePluginEntry: '插件清单',
-      sourcePanelHint: '该服务器由本面板管理，配置保存在当前 profile 的 cordis.patch.yml。',
-      foreignHint: '该服务器来自 {origin}，不是面板配置，面板以只读方式展示。',
-      readonlyPluginHint: '该服务器来自其他来源，面板不能编辑或删除；只有可控制时才能在列表中启停。',
-      toggleDisabledHint: '该服务器不由面板控制，无法在列表中启停。',
+      sourcePanel: '本插件',
+      sourceThirdParty: '第三方导入',
+      sourcePanelHint: '该服务器由本插件管理，配置保存在当前 profile 的 cordis.patch.yml。',
+      foreignHint: '该服务器由第三方导入，不是本插件写入的配置，本插件以只读方式展示。',
+      readonlyPluginHint: '该服务器由第三方导入，本插件不能编辑或删除；只有可控制时才能在列表中启停。',
+      toggleDisabledHint: '该服务器不由本插件控制，无法在列表中启停。',
       edit: '编辑',
       delete: '删除',
       confirmDelete: '确定要删除 MCP 服务 "{name}" 吗？该条目将从当前 profile 的 patch 中移除。',
@@ -949,13 +948,12 @@ window.__ModuleLoader__.load({
 
     function sourceBadgeText(server) {
       if (server.source === 'panel' || server.origin === 'panel') return translate('sourcePanel')
-      if (server.origin === 'magpie') return translate('sourceMagpie')
-      return translate('sourcePluginEntry')
+      return translate('sourceThirdParty')
     }
 
     function sourceBadgeHint(server) {
       if (server.source === 'panel' || server.origin === 'panel') return translate('sourcePanelHint')
-      return translate('foreignHint', { origin: server.originLabel || sourceBadgeText(server) })
+      return translate('foreignHint')
     }
 
     function formatReconnect(reconnect) {
@@ -1549,18 +1547,15 @@ window.__ModuleLoader__.load({
       const sourceFilterOptions = [
         { id: 'all', label: translate('sourceAll') },
         { id: 'panel', label: translate('sourcePanel') },
-        { id: 'magpie', label: translate('sourceMagpie') },
-        { id: 'plugin', label: translate('sourcePluginEntry') },
+        { id: 'third-party', label: translate('sourceThirdParty') },
       ]
 
       const visibleServers = useMemo(() => {
         if (sourceFilter === 'all') return servers
         return servers.filter((server) => {
           const isPanel = server.source === 'panel' || server.origin === 'panel'
-          const isMagpie = server.origin === 'magpie'
           if (sourceFilter === 'panel') return isPanel
-          if (sourceFilter === 'magpie') return isMagpie
-          return !isPanel && !isMagpie
+          return !isPanel
         })
       }, [servers, sourceFilter])
 
@@ -1988,7 +1983,21 @@ window.__ModuleLoader__.load({
 
     function apply(ctx) {
       ctx.effect(() => {
-        ctx.locale?.register?.(LOCALE_NS, { zh: dictZh, en: dictZh })
+        // Return the registration disposer: HMR replacement and fiber re-apply
+        // dispose this effect, and a leaked registration would make the next
+        // apply throw "locale namespace ... already has locale" and keep the
+        // settings section unmounted.
+        const locale = ctx.locale
+        if (typeof locale?.register !== 'function') return
+        try {
+          return locale.register(LOCALE_NS, { zh: dictZh, en: dictZh })
+        } catch (error) {
+          // 0.2.2 and earlier registered without keeping the disposer, so a
+          // page that hot-reloaded them still holds this plugin's dictionaries.
+          // They are ours, so keep them and let the panel mount instead of
+          // failing the whole client half; a page reload clears the stale copy.
+          if (!/already has locale/.test(String(error?.message ?? error))) throw error
+        }
       }, 'dsh-mcp-servers-panel: register locale')
 
       const connection = ctx.get('connection')

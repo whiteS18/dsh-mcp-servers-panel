@@ -67,9 +67,9 @@ test('list merges panel rows with read-only foreign rows and their tools', async
   assert.equal(panel.toolCount, 1)
   assert.equal(panel.readonly, false)
   assert.ok(native)
-  assert.equal(native.source, 'plugin')
-  assert.equal(native.origin, 'magpie')
-  assert.equal(native.originLabel, 'Magpie')
+  assert.equal(native.source, 'third-party')
+  assert.equal(native.origin, 'third-party')
+  assert.equal(native.originLabel, '第三方导入')
   assert.equal(native.readonly, true)
   assert.equal(native.controllable, true)
   assert.equal(native.toolCount, 1)
@@ -152,7 +152,7 @@ test('createOnly and foreign-name conflicts are rejected without touching the pa
   )
   await assert.rejects(
     () => manager.saveServer({ name: 'native', server: { transport: 'stdio', command: 'node' }, createOnly: true }),
-    /插件清单中的条目/,
+    /第三方导入的条目/,
   )
   assert.equal(await readFile(profile.patchPath, 'utf8'), before)
 })
@@ -247,7 +247,7 @@ test('deleteServer removes only panel rows; foreign rows are protected', async (
   await host.hmr.reconcileProfile([])
   const manager = new McpManager(host.ctx)
 
-  await assert.rejects(() => manager.deleteServer({ name: 'native' }), /插件清单/)
+  await assert.rejects(() => manager.deleteServer({ name: 'native' }), /第三方导入/)
   const data = await manager.deleteServer({ name: 'panel' })
   assert.equal(data.application, 'applied')
   assert.equal(rows(await readFile(profile.patchPath, 'utf8')).length, 0)

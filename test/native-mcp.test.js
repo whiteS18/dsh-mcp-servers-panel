@@ -84,7 +84,7 @@ test('registeredMcpTools filters by the public server namespace', () => {
   assert.deepEqual(found.map((tool) => tool.rawName).sort(), ['do', 'extra'])
 })
 
-test('describeMcpEntry reports Magpie source, status, tools and controllability', async () => {
+test('describeMcpEntry reports third-party source, status, tools and controllability', async () => {
   const tools = new Map([['mcp__native__do', { description: 'do', parameters: { type: 'object' } }]])
   const pluginManager = {
     async setPluginEnabled() {},
@@ -103,9 +103,9 @@ test('describeMcpEntry reports Magpie source, status, tools and controllability'
   const row = describeMcpEntry(ctx, inventory.entries[0], inventory.rows.get('magpie-mcp-native'), {
     hasPluginManager: inventory.hasPluginManager,
   })
-  assert.equal(row.source, 'plugin')
-  assert.equal(row.origin, 'magpie')
-  assert.equal(row.originLabel, 'Magpie')
+  assert.equal(row.source, 'third-party')
+  assert.equal(row.origin, 'third-party')
+  assert.equal(row.originLabel, '第三方导入')
   assert.equal(row.patchEntryId, 'magpie-mcp-native')
   assert.equal(row.readonly, true)
   assert.equal(row.controllable, true)
@@ -124,7 +124,7 @@ test('describeMcpEntry marks failed fibers and unaddressable rows', () => {
   assert.equal(row.status, 'error')
   assert.match(row.error, /loader boom/)
   assert.equal(row.controllable, false)
-  assert.match(row.warnings.join('\n'), /插件清单/)
+  assert.match(row.warnings.join('\n'), /第三方导入/)
 })
 
 test('disabled foreign rows report disabled and no tools', () => {

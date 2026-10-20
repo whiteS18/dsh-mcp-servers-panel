@@ -146,7 +146,7 @@ test('importLegacy refuses a name owned by a foreign plugin row', async () => {
     () => manager.importLegacy({
       items: [{ name: 'alpha', server: { transport: 'stdio', command: 'npx' } }],
     }),
-    /插件清单中的条目/,
+    /第三方导入的条目/,
   )
 })
 

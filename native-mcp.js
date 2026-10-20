@@ -145,13 +145,17 @@ export function registeredMcpTools(ctx, serverName) {
   return list
 }
 
-/** Classify a plugin-manifest MCP id by its writer. */
+/**
+ * Classify a non-panel MCP row.
+ *
+ * The panel deliberately does not try to recognise every third-party writer
+ * (Magpie, other plugin manifests, external importers): all of them land in
+ * one read-only bucket labelled 第三方导入, so a new importer never requires a
+ * code change here.
+ */
 export function nativeEntryOrigin(patchEntryId, entryId = '') {
   const id = String(patchEntryId || entryId || '')
-  if (/^magpie-mcp-/i.test(id)) {
-    return { origin: 'magpie', originLabel: 'Magpie', patchEntryId: id }
-  }
-  return { origin: 'plugin-manifest', originLabel: '插件清单', patchEntryId: id }
+  return { origin: 'third-party', originLabel: '第三方导入', patchEntryId: id }
 }
 
 function normalizeStatus(phase, enabled) {
@@ -183,16 +187,16 @@ export function describeMcpEntry(ctx, entry, row, options = {}) {
   let error = ''
   if (status === 'error') error = entry.fiberError || '插件加载失败，请在 DSH 日志中查看原因。'
   if (enabled && !controllable) {
-    warnings.push('该 MCP 来自 DSH 插件清单（可能由 Magpie 等第三方工具写入），当前无法从面板关闭；请在 DSH 插件设置中停用对应条目。')
+    warnings.push('该 MCP 由第三方导入，当前无法从本插件关闭；请在 DSH 插件设置中停用对应条目。')
   }
-  if (!entry.serverName) warnings.push('该插件清单条目缺少 serverName，官方 MCP client 无法注册工具。')
+  if (!entry.serverName) warnings.push('该第三方条目缺少 serverName，官方 MCP client 无法注册工具。')
 
   const transport = config.transport === 'streamable-http' ? 'streamable-http' : 'stdio'
   return {
     name: entry.serverName || patchEntryId || entry.entryId,
     entryId: patchEntryId,
     loaderEntryId: entry.loaderEntryId || entry.entryId,
-    source: 'plugin',
+    source: 'third-party',
     origin: origin.origin,
     originLabel: origin.originLabel,
     patchEntryId: origin.patchEntryId,
@@ -232,9 +236,9 @@ export function describeMcpEntry(ctx, entry, row, options = {}) {
 export async function setNativeServerEnabled(ctx, entryId, enabled) {
   const manager = getPluginManager(ctx)
   if (!manager) {
-    throw new Error('当前 DSH 运行环境没有提供插件管理服务 (pluginManager)，无法启停插件清单中的 MCP 条目')
+    throw new Error('当前 DSH 运行环境没有提供插件管理服务 (pluginManager)，无法启停第三方导入的 MCP 条目')
   }
-  if (!entryId) throw new Error('未找到插件清单条目的 ID')
+  if (!entryId) throw new Error('未找到第三方导入条目的 ID')
   return await manager.setPluginEnabled(entryId, Boolean(enabled))
 }
 
